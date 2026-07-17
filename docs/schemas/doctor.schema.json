@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli doctor success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command doctor. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": ["ok", "checks"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok", "detail"],
+        "properties": {
+          "name": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

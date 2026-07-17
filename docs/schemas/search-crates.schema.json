@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli search-crates success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": ["query", "page", "per_page", "sort", "hits", "meta"],
+  "properties": {
+    "query": { "type": "string" },
+    "page": { "type": "integer", "minimum": 1 },
+    "per_page": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "sort": {
+      "type": "string",
+      "enum": [
+        "relevance",
+        "downloads",
+        "recent-downloads",
+        "recent-updates",
+        "new",
+        "alphabetical"
+      ]
+    },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "downloads", "version"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "downloads": { "type": "integer", "minimum": 0 },
+          "version": { "type": "string" },
+          "documentation": { "type": ["string", "null"] },
+          "max_version": { "type": ["string", "null"] },
+          "max_stable_version": { "type": ["string", "null"] },
+          "default_version": { "type": ["string", "null"] },
+          "recent_downloads": { "type": ["integer", "null"] },
+          "exact_match": { "type": ["boolean", "null"] },
+          "yanked": { "type": ["boolean", "null"] },
+          "repository": { "type": ["string", "null"] },
+          "homepage": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "required": ["total"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "next_page": { "type": ["string", "null"] },
+        "prev_page": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

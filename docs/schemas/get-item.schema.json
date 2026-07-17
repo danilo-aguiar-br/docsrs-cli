@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli get-item success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command get-item. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": [
+    "crate_name",
+    "item_type",
+    "item_path",
+    "version",
+    "markdown",
+    "empty",
+    "truncated",
+    "source_url",
+    "title"
+  ],
+  "properties": {
+    "crate_name": { "type": "string" },
+    "item_type": { "type": "string" },
+    "item_path": { "type": "string" },
+    "version": { "type": "string" },
+    "resolved_version": { "type": ["string", "null"] },
+    "markdown": { "type": "string" },
+    "empty": { "type": "boolean" },
+    "truncated": { "type": "boolean" },
+    "source_url": { "type": "string", "format": "uri" },
+    "title": { "type": "string" }
+  }
+}

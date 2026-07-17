@@ -1,0 +1,33 @@
+{
+  "crates": [
+    {
+      "name": "serde",
+      "description": "A generic serialization/deserialization framework",
+      "downloads": 500000000,
+      "newest_version": "1.0.210",
+      "max_version": "1.0.210",
+      "max_stable_version": "1.0.210",
+      "default_version": "1.0.210",
+      "documentation": "https://docs.rs/serde",
+      "recent_downloads": 10000000,
+      "exact_match": true,
+      "yanked": false,
+      "repository": "https://github.com/serde-rs/serde",
+      "homepage": "https://serde.rs"
+    },
+    {
+      "name": "serde_json",
+      "description": null,
+      "downloads": 400000000,
+      "newest_version": "1.0.128",
+      "max_version": "1.0.128",
+      "documentation": "https://docs.rs/serde_json",
+      "exact_match": false
+    }
+  ],
+  "meta": {
+    "total": 2,
+    "next_page": "page=2",
+    "prev_page": null
+  }
+}

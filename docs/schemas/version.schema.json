@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli version success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command version. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": ["name", "version", "msrv"],
+  "properties": {
+    "name": { "type": "string", "const": "docsrs-cli" },
+    "version": { "type": "string" },
+    "msrv": { "type": "string" },
+    "os": { "type": "string" }
+  }
+}

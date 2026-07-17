@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli search-in-crate success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command search-in-crate. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": [
+    "crate_name",
+    "query",
+    "version",
+    "total",
+    "emitted",
+    "hits",
+    "truncated",
+    "source_url"
+  ],
+  "properties": {
+    "crate_name": { "type": "string" },
+    "query": { "type": "string" },
+    "version": { "type": "string" },
+    "total": { "type": "integer", "minimum": 0 },
+    "emitted": { "type": "integer", "minimum": 0 },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "url"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when total > emitted because --limit cut the hit list"
+    },
+    "source_url": { "type": "string", "format": "uri" }
+  }
+}

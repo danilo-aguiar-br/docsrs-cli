@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli readme success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command readme. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "required": ["crate_name", "version", "markdown", "empty", "truncated", "source_url"],
+  "properties": {
+    "crate_name": { "type": "string" },
+    "version": { "type": "string" },
+    "resolved_version": { "type": ["string", "null"] },
+    "markdown": { "type": "string" },
+    "empty": { "type": "boolean" },
+    "truncated": { "type": "boolean" },
+    "source_url": { "type": "string", "format": "uri" }
+  }
+}

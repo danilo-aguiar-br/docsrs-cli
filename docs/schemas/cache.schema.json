@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli cache clear/stats success data",
+  "oneOf": [
+    {
+      "title": "cache-clear",
+      "type": "object",
+      "required": ["root", "removed_entries", "freed_bytes"],
+      "properties": {
+        "root": { "type": "string" },
+        "removed_entries": { "type": "integer", "minimum": 0 },
+        "freed_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    {
+      "title": "cache-stats",
+      "type": "object",
+      "required": [
+        "root",
+        "layout",
+        "entries",
+        "total_bytes",
+        "max_bytes",
+        "ttl_secs",
+        "parser_version"
+      ],
+      "properties": {
+        "root": { "type": "string" },
+        "layout": { "type": "string" },
+        "entries": { "type": "integer", "minimum": 0 },
+        "total_bytes": { "type": "integer", "minimum": 0 },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 means unlimited"
+        },
+        "ttl_secs": { "type": "integer", "minimum": 0 },
+        "parser_version": { "type": "string" }
+      }
+    }
+  ]
+}
