@@ -167,11 +167,7 @@ fn free_ram_mib() -> Option<u64> {
         let text = fs::read_to_string("/proc/meminfo").ok()?;
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                let kb: u64 = rest
-                    .split_whitespace()
-                    .next()?
-                    .parse()
-                    .ok()?;
+                let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
                 return Some(kb / 1024);
             }
         }
@@ -210,10 +206,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_cpu_bound_returns_value_and_releases_permit() {
         let b = ConcurrencyBudget::new(2);
-        let out = b
-            .run_cpu_bound(|| Ok::<_, AppError>(41 + 1))
-            .await
-            .unwrap();
+        let out = b.run_cpu_bound(|| Ok::<_, AppError>(41 + 1)).await.unwrap();
         assert_eq!(out, 42);
         assert_eq!(b.available_permits(), 2);
     }
@@ -223,10 +216,7 @@ mod tests {
         let b = ConcurrencyBudget::new(1);
         let err = b
             .run_cpu_bound(|| -> AppResult<()> {
-                Err(AppError::new(
-                    ErrorKind::Parse,
-                    "synthetic parse failure",
-                ))
+                Err(AppError::new(ErrorKind::Parse, "synthetic parse failure"))
             })
             .await
             .unwrap_err();

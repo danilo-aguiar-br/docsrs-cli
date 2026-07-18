@@ -8,6 +8,28 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 
 ## [Unreleased]
+
+## [0.1.2] - 2026-07-18
+### Fixed
+- GAP-001: eco de `search-crates --page-token` a partir da URL efetiva (e dry-run `planned_params` batem)
+- GAP-002: extração de método por âncora rustdoc (não página inteira do tipo); campo opcional `extraction` (`method`|`item_page`)
+- GAP-003: body acima do teto → `kind=budget`, exit 74, `retryable=false`
+- GAP-004: `doctor` com `ok` no topo = `data.ok`
+- GAP-005: `--suggest` multi-modo + distância de edição (um fetch de all.html)
+- GAP-006: scrub de chrome rustdoc (`§`, Copy item path)
+- GAP-007: hífen em `item_path` normaliza para `_`
+- GAP-012: árvore formatada com `cargo fmt`
+- GAP-013: comentários rustdoc deduplicados em helpers de method/search
+- GAP-015: `--timeout 0` / `--connect-timeout 0` explícitos fail-closed com exit 65
+
+### Changed
+- Versão de produto **0.1.2**; PRD/docs alinhados
+- Docs bilíngues sincronizados com a linha 0.1 (README, HOW_TO_USE, MIGRATION, SECURITY, INTEGRATIONS, CROSS_PLATFORM, TESTING, schemas README, AGENTS, COOKBOOK, skills, `llms*.txt`)
+
+### Added
+- `scripts/smoke-live.sh` (ritual humano pré-release, sem CI)
+- Fixture offline `tests/fixtures/docs_rs/method_runtime_new.html` para golden de extração de método
+
 ## [1.1.0] - 2026-07-18
 ### Changed
 - Match padrão de `search-in-crate` é `prefix` (não substring); use `--match substring` para o legado
@@ -67,6 +89,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - MSRV 1.88
 
 
-[Unreleased]: https://github.com/danilo-aguiar-br/docsrs-cli/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/danilo-aguiar-br/docsrs-cli/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v0.1.2
 [1.1.0]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v1.1.0
 [0.1.0]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v0.1.0

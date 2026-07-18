@@ -73,9 +73,11 @@ RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no
 ## Release Process
 - Bump version in `Cargo.toml` with SemVer
 - Update `CHANGELOG.md` and `CHANGELOG.pt-BR.md`
-- Sync bilingual public docs and skills with the new command surface
+- Sync bilingual public docs, `llms*.txt`, and skills with the new command surface
 - Update `SECURITY.md` / `SECURITY.pt-BR.md` supported versions line
 - Confirm `docs/MIGRATION.md` covers the release breakings
+- Run offline gates: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked --all-targets`
+- Optional human live smoke: `./scripts/smoke-live.sh` (not CI)
 - Tag only after maintainer approval
 - Publish crates.io only with explicit maintainer authorization
 

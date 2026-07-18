@@ -55,6 +55,11 @@
     "cache_hit": {
       "type": "boolean",
       "description": "True when the HTTP response body was served from the local disk cache"
+    },
+    "extraction": {
+      "type": "string",
+      "enum": ["method", "item_page"],
+      "description": "Present for associated-method fetches: method-scoped markdown vs full parent item page fallback. Omitted for non-method items (never JSON null)."
     }
   },
   "additionalProperties": false

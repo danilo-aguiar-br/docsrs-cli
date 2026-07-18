@@ -1,12 +1,19 @@
 # docsrs-cli
 > One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
 
-docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 1.1.0.
+docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 0.1.2.
 
-## Release 1.1.0 agent surface
+## Release 0.1.2 agent surface
 - `--match exact|prefix|substring` on search-in-crate (default prefix)
 - `--page-token` on search-crates without positional query when the token carries the full query
-- `--suggest` on get-item 404 for nearby symbols
+- `--page-token` success and dry-run echo `query`/`page`/`per_page`/`sort` from the **effective URL**
+- `--suggest` on get-item 404 ranks exact → prefix → substring → edit-distance (one all.html fetch)
+- Associated-method `get-item` scopes markdown to the method; optional `data.extraction` is `method` or `item_page`
+- Body over `--max-body-bytes` is `error.kind=budget`, exit 74, **`retryable=false`** (do not retry storms)
+- `doctor` top-level `ok` mirrors `data.ok` (exit 78 when unhealthy)
+- Explicit `--timeout 0` / `--connect-timeout 0` fail-closed with exit 65
+- `item_path` accepts hyphens and normalizes to underscores (rustc paths)
+- Markdown scrub removes rustdoc chrome (`§`, “Copy item path”)
 - `doctor --online` for DNS probes to crates.io and docs.rs
 - `data.cache_hit` on network payloads (local disk cache only)
 - Canonical wire field `crate_name`
@@ -15,6 +22,7 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - Ranked hit `score` on search-in-crate
 - Product knobs: CLI flags + XDG config.toml only (path sandbox env remains)
 - Completions emit raw shell scripts unless `--json` is explicit
+- Human pre-release smoke: `scripts/smoke-live.sh` (not CI)
 
 ## Primary Documentation
 - [README](README.md): landing page with install, commands, env, FAQ
@@ -27,9 +35,9 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [Cookbook pt-BR](docs/COOKBOOK.pt-BR.md): receitas em português
 - [Cross platform](docs/CROSS_PLATFORM.md): Linux macOS Windows matrix
 - [Cross platform pt-BR](docs/CROSS_PLATFORM.pt-BR.md): matriz multiplataforma
-- [Migration](docs/MIGRATION.md): migration from 0.1.x to 1.1.0
+- [Migration](docs/MIGRATION.md): migration from 0.1.x / 1.1.x to 0.1.2
 - [Migration pt-BR](docs/MIGRATION.pt-BR.md): notas de migração
-- [Testing](docs/TESTING.md): test categories and how to run
+- [Testing](docs/TESTING.md): test categories, how to run, smoke-live
 - [Testing pt-BR](docs/TESTING.pt-BR.md): guia de testes
 - [JSON schemas index](docs/schemas/README.md): schema inventory
 - [get-item schema](docs/schemas/get-item.schema.json)
@@ -60,7 +68,7 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md) / [pt-BR](docs/decisions/0001-http-retry-policy.pt-BR.md)
 - [Error model ADR](docs/decisions/0002-error-model.md) / [pt-BR](docs/decisions/0002-error-model.pt-BR.md)
 - [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md) / [pt-BR](docs/decisions/0003-web-fetch-scope.pt-BR.md)
-- [gaps.md](gaps.md): closed product gap matrix for 1.1.0
+- [gaps.md](gaps.md): closed product gap matrix for 0.1.2 (GAP-001…018)
 
 ## Optional
 - [llms.txt](llms.txt): short discovery document

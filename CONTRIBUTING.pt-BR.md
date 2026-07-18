@@ -73,9 +73,11 @@ RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no
 ## Processo de Release
 - Atualize a versão em `Cargo.toml` com SemVer
 - Atualize `CHANGELOG.md` e `CHANGELOG.pt-BR.md`
-- Sincronize docs públicos bilíngues e skills com a nova superfície de comandos
+- Sincronize docs públicos bilíngues, `llms*.txt` e skills com a nova superfície de comandos
 - Atualize a linha de versões suportadas em `SECURITY.md` / `SECURITY.pt-BR.md`
 - Confirme que `docs/MIGRATION.pt-BR.md` cobre os breakings do release
+- Rode gates offline: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked --all-targets`
+- Smoke live humano opcional: `./scripts/smoke-live.sh` (sem CI)
 - Faça tag só após aprovação do mantenedor
 - Publique no crates.io só com autorização explícita do mantenedor
 

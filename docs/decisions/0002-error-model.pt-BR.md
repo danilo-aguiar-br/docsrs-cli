@@ -17,6 +17,7 @@
 - Cadeia de causa: `with_source` guarda `Arc<dyn Error + Send + Sync>`; Display mostra só `message`; callers percorrem `Error::source` até a causa raiz
 - Clone: `AppError: Clone` compartilha o source via `Arc` para retries e logging reterem o erro original com baixo custo
 - Classificação: `ErrorKind::is_retryable` / `is_permanent` e métodos espelhados em `AppError` para contratos de agente (alinhado ao retry do ADR 0001)
+- Tetos locais de body/output usam `ErrorKind::Budget` (exit 74, permanente na mesma config); falhas de transporte mantêm `ErrorKind::Network` (exit 74, retryable)
 - Caminho de emissão: toda falha de domínio na CLI passa por `emit_error` (envelope JSON ou stderr localizado)
 - Falhas de load de config não devem usar `?` nu caindo em path hardcoded de exit 70
 - Política de panic: só invariantes estáticos (regex / seletores CSS hardcoded) usam `.expect("… valid by construction")`

@@ -37,8 +37,8 @@ fn golden_search_markdown_contains_sections() {
             next_page: None,
             prev_page: None,
         },
-            cache_hit: false,
-        };
+        cache_hit: false,
+    };
     let md = render_search_markdown(&data);
     assert!(md.contains("# Crate Search Results"));
     assert!(md.contains("## serde (1.0.0)"));
@@ -58,8 +58,8 @@ fn golden_readme_from_fixture() {
         empty: false,
         truncated: false,
         source_url: "https://docs.rs/demo/latest/demo/index.html".into(),
-            cache_hit: false,
-        };
+        cache_hit: false,
+    };
     let md = render_readme_markdown(&data);
     assert!(md.contains("# demo Documentation"));
     assert!(!md.contains("<script>"));
@@ -79,8 +79,9 @@ fn golden_item_markdown() {
         truncated: false,
         source_url: "https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html".into(),
         title: "tokio::runtime::Runtime (struct)".into(),
-            cache_hit: false,
-        };
+        cache_hit: false,
+        extraction: None,
+    };
     let md = render_item_markdown(&data);
     assert!(md.contains("# tokio::runtime::Runtime (struct)"));
     assert!(md.contains("Documentation URL"));
@@ -89,7 +90,16 @@ fn golden_item_markdown() {
 #[test]
 fn golden_search_in_crate_from_fixture() {
     let html = include_str!("fixtures/docs_rs/all_html_sample.html");
-    let hits = parse_all_html_hits(html, "demo", "1.0.0", "Client", None, 10, docsrs_cli::domain::MatchMode::Prefix).unwrap();
+    let hits = parse_all_html_hits(
+        html,
+        "demo",
+        "1.0.0",
+        "Client",
+        None,
+        10,
+        docsrs_cli::domain::MatchMode::Prefix,
+    )
+    .unwrap();
     let data = SearchInCrateData {
         crate_name: "demo".into(),
         query: "Client".into(),
@@ -109,8 +119,8 @@ fn golden_search_in_crate_from_fixture() {
         match_mode: "prefix".into(),
         truncated: false,
         source_url: "https://docs.rs/demo/1.0.0/demo/all.html".into(),
-            cache_hit: false,
-        };
+        cache_hit: false,
+    };
     let md = render_search_in_crate_markdown(&data);
     assert!(md.contains("Client"));
     assert!(md.contains("Found"));

@@ -2,8 +2,8 @@
 
 # Security Policy
 ## Supported Versions
-- `1.1.x` receives security fixes
-- `0.1.x` is historical and does not receive new security fixes
+- `0.1.x` receives security fixes
+- `1.1.x` and `0.1.x` are historical and do not receive new security fixes
 - Pre-release experiments outside tagged releases are unsupported
 
 
@@ -52,7 +52,7 @@
 
 ## Hall of Fame
 - Security researchers who report valid issues may be listed here after fixes ship
-- No entries yet for 1.1.0
+- No entries yet for 0.1.2
 
 
 ## Best Practices for Users

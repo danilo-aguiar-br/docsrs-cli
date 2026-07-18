@@ -17,7 +17,7 @@ fn version_json() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["name"], "docsrs-cli");
-    assert_eq!(v["data"]["version"], "1.1.0");
+    assert_eq!(v["data"]["version"], "0.1.2");
     assert_eq!(v["data"]["msrv"], "1.88.0");
     assert!(v.get("schema_version").is_some());
     assert!(v.get("duration_ms").is_some());
@@ -33,7 +33,7 @@ fn version_text() {
         .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("docsrs-cli 1.1.0"));
+    assert!(s.contains("docsrs-cli 0.1.2"));
 }
 
 #[test]
@@ -197,6 +197,8 @@ fn doctor_missing_config_dir_fails() {
         String::from_utf8_lossy(&out.stdout)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // GAP-004: top-level ok mirrors data.ok for agent-first health checks.
+    assert_eq!(v["ok"], false);
     assert_eq!(v["data"]["ok"], false);
     let checks = v["data"]["checks"].as_array().unwrap();
     let config = checks
@@ -459,37 +461,28 @@ fn config_path_show_init_lifecycle() {
 }
 
 #[test]
-fn doctor_timeout_zero_uses_effective_min_one() {
-    // Config/runtime clamp timeout to min 1s; doctor must not fail solely because the raw flag is 0.
+fn timeout_zero_is_invalid_input_exit_65() {
+    // Explicit --timeout 0 is fail-closed (GAP-015); no silent clamp to 1s.
     let out = bin()
-        .args([
-            "--timeout",
-            "0",
-            "--connect-timeout",
-            "0",
-            "doctor",
-            "--json",
-        ])
+        .args(["--timeout", "0", "doctor", "--json"])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_eq!(out.status.code(), Some(65));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["data"]["ok"], true);
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let timeouts = checks
-        .iter()
-        .find(|c| c["name"] == "timeouts")
-        .expect("timeouts check");
-    assert_eq!(timeouts["ok"], true);
-    let detail = timeouts["detail"].as_str().unwrap();
-    assert!(
-        detail.contains("timeout=1s") && detail.contains("connect=1s"),
-        "detail={detail}"
-    );
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "invalid_input");
+    assert_eq!(v["error"]["retryable"], false);
+}
+
+#[test]
+fn connect_timeout_zero_is_invalid_input_exit_65() {
+    let out = bin()
+        .args(["--connect-timeout", "0", "version", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "invalid_input");
 }
 
 #[test]

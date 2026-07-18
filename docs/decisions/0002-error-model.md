@@ -17,6 +17,7 @@
 - Cause chain: `with_source` stores `Arc<dyn Error + Send + Sync>`; Display shows only `message`; callers walk `Error::source` for the root cause
 - Clone: `AppError: Clone` shares the source via `Arc` so retries and logging can retain the original error cheaply
 - Classification: `ErrorKind::is_retryable` / `is_permanent` and matching methods on `AppError` for agent contracts (aligned with ADR 0001 retry)
+- Local body/output caps use `ErrorKind::Budget` (exit 74, permanent for the same config); transport failures keep `ErrorKind::Network` (exit 74, retryable)
 - Emit path: every domain failure in the CLI goes through `emit_error` (JSON envelope or localized stderr)
 - Config load failures must not use bare `?` into a hardcoded exit-70 path
 - Panic policy: only static invariants (hardcoded regex / CSS selectors) use `.expect("… valid by construction")`

@@ -70,4 +70,4 @@
 - Use as skills empacotadas como fonte operacional de verdade
 - Valide offline com `docsrs-cli doctor --json` em cada classe de host que você envia
 - Valide conectividade live com `docsrs-cli doctor --online --json` em cada classe de host
-- Confirme que `docsrs-cli version --json` reporta `1.1.0` (ou 1.1.x mais novo) após o deploy
+- Confirme que `docsrs-cli version --json` reporta `0.1.2` (ou 0.1.x mais novo) após o deploy

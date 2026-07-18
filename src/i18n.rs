@@ -196,11 +196,7 @@ impl Locale {
 /// - lowercase
 fn normalize_lang_tag(tag: &str) -> String {
     let trimmed = tag.trim();
-    let base = trimmed
-        .split(['.', '@'])
-        .next()
-        .unwrap_or(trimmed)
-        .trim();
+    let base = trimmed.split(['.', '@']).next().unwrap_or(trimmed).trim();
     base.replace('_', "-").to_ascii_lowercase()
 }
 
@@ -239,7 +235,10 @@ fn translate_error_pt_br(technical_en: &str) -> String {
         return "caminho do item sem nome do item".into();
     }
     if technical_en.starts_with("invalid item path segment") {
-        return technical_en.replace("invalid item path segment", "segmento de caminho de item inválido");
+        return technical_en.replace(
+            "invalid item path segment",
+            "segmento de caminho de item inválido",
+        );
     }
     if technical_en.starts_with("item path segment contains whitespace") {
         return technical_en.replace(
@@ -267,6 +266,26 @@ fn translate_error_pt_br(technical_en: &str) -> String {
     }
     if technical_en.starts_with("wall-clock timeout") {
         return technical_en.replace("wall-clock timeout after", "tempo esgotado após");
+    }
+    if technical_en.starts_with("response body exceeds max_body_bytes") {
+        return technical_en.replace(
+            "response body exceeds max_body_bytes",
+            "corpo da resposta excede max_body_bytes",
+        );
+    }
+    if technical_en.starts_with("timeout must be >=") {
+        return technical_en
+            .replace(
+                "timeout must be >= 1 second (got 0)",
+                "timeout deve ser >= 1 segundo (recebido 0)",
+            )
+            .replace("timeout must be >=", "timeout deve ser >=");
+    }
+    if technical_en.starts_with("connect_timeout must be >=") {
+        return technical_en.replace(
+            "connect_timeout must be >= 1 second (got 0)",
+            "connect_timeout deve ser >= 1 segundo (recebido 0)",
+        );
     }
     if technical_en.starts_with("interrupted by SIGINT") {
         return "interrompido por SIGINT".into();
@@ -326,7 +345,10 @@ mod tests {
     fn parse_supported_en_pt_br() {
         assert_eq!(Locale::parse_supported("pt-BR").unwrap(), Locale::PtBr);
         assert_eq!(Locale::parse_supported("pt_BR").unwrap(), Locale::PtBr);
-        assert_eq!(Locale::parse_supported("pt_BR.UTF-8").unwrap(), Locale::PtBr);
+        assert_eq!(
+            Locale::parse_supported("pt_BR.UTF-8").unwrap(),
+            Locale::PtBr
+        );
         assert_eq!(Locale::parse_supported("en-US").unwrap(), Locale::En);
         assert_eq!(Locale::parse_supported("en").unwrap(), Locale::En);
         assert_eq!(Locale::parse_supported("en.UTF-8").unwrap(), Locale::En);

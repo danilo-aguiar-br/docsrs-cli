@@ -167,9 +167,20 @@ pub fn success_envelope<'a, T: Serialize>(
     duration_ms: u64,
     source_url: Option<&'a str>,
 ) -> SuccessEnvelope<'a, T> {
+    success_envelope_with_ok(command, data, duration_ms, source_url, true)
+}
+
+/// Build a success-shaped envelope with an explicit top-level `ok` (used by `doctor`).
+pub fn success_envelope_with_ok<'a, T: Serialize>(
+    command: &'a str,
+    data: T,
+    duration_ms: u64,
+    source_url: Option<&'a str>,
+    ok: bool,
+) -> SuccessEnvelope<'a, T> {
     SuccessEnvelope {
         schema_version: SCHEMA_VERSION,
-        ok: true,
+        ok,
         command,
         data,
         duration_ms,
@@ -394,6 +405,7 @@ mod tests {
             source_url: "u".into(),
             title: "c::f (fn)".into(),
             cache_hit: false,
+            extraction: None,
         };
         assert!(render_item_markdown(&i).contains("No documentation"));
     }
@@ -440,11 +452,7 @@ mod tests {
         let v = serde_json::to_value(&hit).expect("serialize hit");
         assert!(v.get("documentation").is_none());
         assert!(v.get("repository").is_none());
-        assert!(!v
-            .as_object()
-            .expect("object")
-            .values()
-            .any(|x| x.is_null()));
+        assert!(!v.as_object().expect("object").values().any(|x| x.is_null()));
 
         let readme = ReadmeData {
             crate_name: "c".into(),
@@ -458,11 +466,7 @@ mod tests {
         };
         let r = serde_json::to_value(&readme).expect("serialize readme");
         assert!(r.get("resolved_version").is_none());
-        assert!(!r
-            .as_object()
-            .expect("object")
-            .values()
-            .any(|x| x.is_null()));
+        assert!(!r.as_object().expect("object").values().any(|x| x.is_null()));
     }
 
     #[test]
@@ -480,8 +484,8 @@ mod tests {
                 empty: false,
                 truncated: false,
                 source_url: "u".into(),
-            cache_hit: false,
-        },
+                cache_hit: false,
+            },
             &cfg,
         );
         assert!(r.truncated);
@@ -499,8 +503,9 @@ mod tests {
                 truncated: false,
                 source_url: "u".into(),
                 title: "t".into(),
-            cache_hit: false,
-        },
+                cache_hit: false,
+                extraction: None,
+            },
             &cfg,
         );
         assert!(i.truncated);

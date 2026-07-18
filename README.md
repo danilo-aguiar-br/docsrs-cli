@@ -17,7 +17,7 @@
 - No daemon, no sticky session, no product telemetry
 - JSON auto-selects when stdout is not a TTY
 - Public HTTP only against an allowlist of docs hosts
-- Current product line is 1.1.x
+- Current product line is 0.1.x
 
 
 ## The Pain
@@ -37,13 +37,30 @@
 
 ## Superpowers
 - `search-crates` against crates.io with pagination, sort, and `--page-token`
+- `--page-token` echoes `query`/`page`/`per_page`/`sort` from the effective URL
 - `readme` for the docs.rs crate overview docblock with `resolved_version`
 - `get-item` for typed rustdoc pages including associated methods
+- Method fetch scopes markdown and may set `data.extraction` to `method` or `item_page`
 - `search-in-crate` over `all.html` with `--match exact|prefix|substring`
+- `--suggest` ranks exact → prefix → substring → edit-distance on get-item 404
+- `item_path` accepts hyphens and normalizes to underscores for rustc paths
+- Markdown scrub removes rustdoc chrome (`§`, “Copy item path”)
+- Body over cap is `error.kind=budget` (exit 74, `retryable=false`)
 - stdlib fetch for `std`, `core`, and `alloc` via doc.rust-lang.org
 - `commands`, `schema`, `doctor`, `version` for agent discovery
 - `doctor --online` for opt-in DNS probes to crates.io and docs.rs
+- `doctor` top-level `ok` mirrors `data.ok`
 - `cache` and `config` for XDG maintenance without secrets
+
+
+## What's New in 0.1.2
+- Effective-URL echo for `--page-token` (and matching dry-run `planned_params`)
+- Method-scoped extraction with optional `data.extraction`
+- Non-retryable local body budget errors (`kind=budget`)
+- Cascade `--suggest`, hyphen path normalize, rustdoc chrome scrub
+- Fail-closed `--timeout 0` / `--connect-timeout 0` (exit 65)
+- Human smoke ritual: `scripts/smoke-live.sh` (not CI)
+- Full notes under [CHANGELOG.md](CHANGELOG.md) section `[0.1.2]`
 
 
 ## Quick Start
@@ -110,10 +127,12 @@ docsrs-cli doctor --online --json
 - Success envelope: `schema_version`, `ok`, `command`, `data`, `duration_ms`
 - Network payloads use canonical `crate_name` (never `crate`)
 - Network payloads expose `cache_hit` for local disk cache only
-- `get-item` exposes `item_name` and optional `resolved_version`
+- `get-item` exposes `item_name`, optional `resolved_version`, optional `extraction`
 - `readme` exposes optional `resolved_version` (stdlib channel is `stable`)
 - `search-in-crate` echoes `match_mode` and optional `item_type`
 - `search-crates` pagination tokens live under `data.meta.next_page` / `prev_page`
+- After `--page-token`, echoed `query`/`page`/`per_page`/`sort` match the effective URL
+- Failure envelopes expose `error.kind` and `error.retryable` (never retry `kind=budget`)
 
 
 ## Environment Variables
@@ -151,15 +170,20 @@ docsrs-cli doctor --online --json
 
 
 ## Troubleshooting FAQ
+- Exit `65` means invalid input (including explicit `--timeout 0` / `--connect-timeout 0`)
 - Exit `66` means the crate or item was not found
 - Use `get-item ... --suggest` to list nearby symbols after a 404
-- Exit `69` means rate limit or temporary upstream outage
-- Exit `74` means transport failure; retry with backoff
+- Exit `69` means rate limit or temporary upstream outage (retryable)
+- Exit `74` with `error.kind=network` means transport failure; retry with backoff
+- Exit `74` with `error.kind=budget` means local body cap; do not retry — raise `--max-body-bytes`
+- Always read `error.retryable` before retrying any non-zero exit
 - Exit `78` means local config or path readiness failed
 - Exit `124` means wall-clock timeout
 - Run `docsrs-cli doctor --json` before blaming the network
+- Treat doctor healthy only when top-level `ok` and `data.ok` are both true
 - Run `docsrs-cli doctor --online --json` to probe crates.io and docs.rs DNS
 - Noisy search hits: switch from `--match substring` to `prefix` or `exact`
+- Hyphenated paths: pass `async-trait` segments; the CLI normalizes to `async_trait`
 
 
 ## Documentation Map
@@ -186,7 +210,7 @@ docsrs-cli doctor --online --json
 
 ## Changelog
 - See [CHANGELOG.md](CHANGELOG.md) for version history
-- Current release notes for 1.1.0 live under `[1.1.0]`
+- Current release notes for 0.1.2 live under `[0.1.2]`
 
 
 ## License

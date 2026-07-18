@@ -231,8 +231,7 @@ async fn run_cli<Out: Write, ErrW: Write>(
 
     // Config load must go through `emit_error` so exit 78 / JSON envelope are correct.
     // A bare `?` would bubble to `run_with_io` and historically forced exit 70.
-    let mut cfg = match Config::load_with_cache_dir(cli.config_dir.clone(), cli.cache_dir.clone())
-    {
+    let mut cfg = match Config::load_with_cache_dir(cli.config_dir.clone(), cli.cache_dir.clone()) {
         Ok(c) => c,
         Err(e) => {
             return Ok(emit_error(
@@ -245,7 +244,16 @@ async fn run_cli<Out: Write, ErrW: Write>(
             ));
         }
     };
-    apply_cli_overrides(&cli, &mut cfg);
+    if let Err(e) = apply_cli_overrides(&cli, &mut cfg) {
+        return Ok(emit_error(
+            &cli,
+            &e,
+            Locale::En,
+            stdout,
+            stderr,
+            stdout_is_terminal,
+        ));
+    }
 
     // Fail-closed on explicit/config/env lang before any network work.
     let locale = match Locale::resolve(cli.lang.as_deref().or(cfg.lang.as_deref())) {
@@ -295,11 +303,23 @@ async fn run_cli<Out: Write, ErrW: Write>(
     }
 }
 
-fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) {
+fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
     if let Some(t) = cli.timeout {
+        if t == 0 {
+            return Err(AppError::new(
+                ErrorKind::InvalidInput,
+                "timeout must be >= 1 second (got 0)",
+            ));
+        }
         cfg.timeout_secs = t;
     }
     if let Some(t) = cli.connect_timeout {
+        if t == 0 {
+            return Err(AppError::new(
+                ErrorKind::InvalidInput,
+                "connect_timeout must be >= 1 second (got 0)",
+            ));
+        }
         cfg.connect_timeout_secs = t;
     }
     if let Some(ref ua) = cli.user_agent {
@@ -349,6 +369,79 @@ fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) {
     }
     // After all CLI mutations: hard ceiling (cannot elevate above HARD_MAX_*).
     cfg.clamp_resource_limits();
+    Ok(())
+}
+
+/// Rank nearby symbols for `--suggest` (exact → prefix → substring → edit distance).
+///
+/// Single in-memory pass over an all.html catalog (one prior HTTP fetch).
+fn rank_suggestions(leaf: &str, hits: &[docs_rs::SearchInCrateHit], limit: usize) -> Vec<String> {
+    use crate::domain::MatchMode;
+    let needle = leaf.trim();
+    if needle.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let mut scored: Vec<(u8, &docs_rs::SearchInCrateHit)> = Vec::new();
+    for h in hits {
+        if let Some(s) = MatchMode::Exact.score(&h.name, needle) {
+            scored.push((s, h));
+            continue;
+        }
+        if let Some(s) = MatchMode::Prefix.score(&h.name, needle) {
+            scored.push((s.saturating_add(10), h));
+            continue;
+        }
+        if let Some(s) = MatchMode::Substring.score(&h.name, needle) {
+            scored.push((s.saturating_add(20), h));
+            continue;
+        }
+        let leaf_hit = h.name.rsplit("::").next().unwrap_or(h.name.as_str());
+        if let Some(d) = edit_distance_u8(needle, leaf_hit, 2) {
+            scored.push((30 + d, h));
+        }
+    }
+    scored.sort_by_key(|(s, h)| (*s, h.name.clone()));
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (_, h) in scored {
+        let label = format!("{} ({})", h.name, h.kind);
+        if seen.insert(h.name.clone()) {
+            out.push(label);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Bounded Levenshtein distance; returns `None` when distance would exceed `max`.
+fn edit_distance_u8(a: &str, b: &str, max: u8) -> Option<u8> {
+    let a = a.to_ascii_lowercase();
+    let b = b.to_ascii_lowercase();
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (n, m) = (a.len(), b.len());
+    if n.abs_diff(m) > max as usize {
+        return None;
+    }
+    let max_u = max as usize;
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut cur = vec![0usize; m + 1];
+    for i in 1..=n {
+        cur[0] = i;
+        let mut row_min = cur[0];
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            row_min = row_min.min(cur[j]);
+        }
+        if row_min > max_u {
+            return None;
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let d = prev[m];
+    if d <= max_u { Some(d as u8) } else { None }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,7 +480,8 @@ async fn dispatch<Out: Write, ErrW: Write>(
         Commands::Schema { cmd } => schema_cmd(cmd, wants_json, cli.format, start, stdout),
         Commands::Completions { shell } => {
             // Completions emit shell script by default (even on non-TTY). JSON only if --json/--format json.
-            let explicit_json = cli.json || matches!(cli.format, Some(crate::cli::OutputFormat::Json));
+            let explicit_json =
+                cli.json || matches!(cli.format, Some(crate::cli::OutputFormat::Json));
             completions_cmd(*shell, explicit_json, start, stdout)
         }
         Commands::Cache { action } => cache_cmd(cfg, action, wants_json, start, stdout),
@@ -424,15 +518,18 @@ async fn dispatch<Out: Write, ErrW: Write>(
                     page,
                 )?
             };
+            // Single source of truth: echo params from the effective URL (GAP-001).
+            let fallback = crates_io::SearchEcho::from_cli(query.as_str(), page, per_page, sort_s);
+            let echo = crates_io::echo_params_from_url(&url, &fallback);
             if dry_run {
                 return emit_dry_run(
                     "search-crates",
                     url.as_str(),
                     SearchCratesDryParams {
-                        q: query.as_str(),
-                        per_page,
-                        sort: sort_s,
-                        page,
+                        q: &echo.query,
+                        per_page: echo.per_page,
+                        sort: &echo.sort,
+                        page: echo.page,
                         page_token: page_token.as_deref(),
                     },
                     wants_json,
@@ -446,9 +543,15 @@ async fn dispatch<Out: Write, ErrW: Write>(
                 locale.progress_fetching("crates.io"),
             );
             let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data =
-                crates_io::search_crates_at(&http, &url, query.as_str(), per_page, sort_s, page)
-                    .await;
+            let data = crates_io::search_crates_at(
+                &http,
+                &url,
+                &echo.query,
+                echo.per_page,
+                &echo.sort,
+                echo.page,
+            )
+            .await;
             progress.finish();
             let data = data?;
             if wants_json {
@@ -582,27 +685,29 @@ async fn dispatch<Out: Write, ErrW: Write>(
             let data = match data {
                 Ok(d) => apply_truncation_to_item(d, cfg),
                 Err(e) if *suggest && e.kind() == ErrorKind::NotFound => {
-                    // Opt-in recovery: list nearby symbols from all.html
+                    // Opt-in recovery: one all.html fetch, then cascade rank (GAP-005).
                     let all_url = docs_rs::all_html_url_on_origin(
                         &origin,
                         crate_name.as_str(),
                         version.as_str(),
                     )?;
-                    let leaf = segs.last().map(|s| s.as_str()).unwrap_or(item_path.as_str());
-                    if let Ok(sugg) = docs_rs::search_in_crate_at(
+                    let leaf = segs
+                        .last()
+                        .map(|s| s.as_str())
+                        .unwrap_or(item_path.as_str());
+                    if let Ok(catalog) = docs_rs::search_in_crate_at(
                         &http,
                         crate_name.as_str(),
                         version.as_str(),
-                        leaf,
+                        "",
                         None,
-                        5,
+                        1000,
                         crate::domain::MatchMode::Prefix,
                         &all_url,
                     )
                     .await
                     {
-                        let names: Vec<String> =
-                            sugg.hits.into_iter().map(|h| format!("{} ({})", h.name, h.kind)).collect();
+                        let names = rank_suggestions(leaf, &catalog.hits, 5);
                         return Err(AppError::new(
                             ErrorKind::NotFound,
                             format!(
@@ -767,10 +872,7 @@ fn doctor<Out: Write>(
             } else {
                 (
                     true,
-                    format!(
-                        "absent (optional; run config init) path={}",
-                        p.display()
-                    ),
+                    format!("absent (optional; run config init) path={}", p.display()),
                 )
             }
         }
@@ -923,7 +1025,10 @@ fn doctor<Out: Write>(
 
     if online {
         // Sync DNS/TCP probe (no async runtime needed inside doctor).
-        for (name, host) in [("online_crates_io", "crates.io"), ("online_docs_rs", "docs.rs")] {
+        for (name, host) in [
+            ("online_crates_io", "crates.io"),
+            ("online_docs_rs", "docs.rs"),
+        ] {
             let ok_probe = std::net::ToSocketAddrs::to_socket_addrs(&format!("{host}:443"))
                 .map(|mut it| it.next().is_some())
                 .unwrap_or(false);
@@ -942,9 +1047,10 @@ fn doctor<Out: Write>(
     let ok = checks.iter().all(|c| c.ok);
     let data = DoctorData { ok, checks };
     if wants_json {
+        // Agent-first: top-level `ok` mirrors `data.ok` (GAP-004). Exit 78 when unhealthy.
         write_json(
             stdout,
-            &success_envelope("doctor", &data, duration_ms(start), None),
+            &render::success_envelope_with_ok("doctor", &data, duration_ms(start), None, data.ok),
         )?;
     } else {
         writeln!(stdout, "{}", locale.doctor_ok(ok)).map_err(map_stdout_err)?;
@@ -1192,12 +1298,8 @@ fn commands_cmd<Out: Write>(
             &success_envelope("commands", &data, duration_ms(start), None),
         )?;
     } else {
-        writeln!(
-            stdout,
-            "{} {} — command tree",
-            data.name, data.version
-        )
-        .map_err(map_stdout_err)?;
+        writeln!(stdout, "{} {} — command tree", data.name, data.version)
+            .map_err(map_stdout_err)?;
         for c in data.commands {
             writeln!(stdout, "- {}: {}", c.name, c.about).map_err(map_stdout_err)?;
             for s in c.subcommands {
@@ -1314,13 +1416,26 @@ fn command_tree_data() -> CommandTree {
             CommandNode {
                 name: "get-item",
                 about: "Fetch documentation for a typed item",
-                args: &["crate_name", "item_type", "item_path", "--crate-version", "--suggest"],
+                args: &[
+                    "crate_name",
+                    "item_type",
+                    "item_path",
+                    "--crate-version",
+                    "--suggest",
+                ],
                 subcommands: &[],
             },
             CommandNode {
                 name: "search-in-crate",
                 about: "Search symbols in crate all.html index",
-                args: &["crate_name", "query", "--crate-version", "--item-type", "--limit", "--match"],
+                args: &[
+                    "crate_name",
+                    "query",
+                    "--crate-version",
+                    "--item-type",
+                    "--limit",
+                    "--match",
+                ],
                 subcommands: &[],
             },
             CommandNode {

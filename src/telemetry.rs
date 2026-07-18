@@ -45,8 +45,8 @@ use crate::cli::Cli;
 /// appender thread). FINALIZE still flushes stdio via [`crate::shutdown::flush_stdio`].
 pub fn init_tracing(cli: &Cli) {
     let default_level = default_directive(cli);
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     let filter_display = filter.to_string();
     // Color policy: --no-color, NO_COLOR, TERM=dumb, CLICOLOR_FORCE (see platform).
     let ansi = crate::platform::ansi_colors_enabled(cli.no_color);

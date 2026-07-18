@@ -2,19 +2,34 @@
 
 # Migration
 ## What Changes
-- Public product line is `1.1.x` (this release is `1.1.0`)
+- Public product line is `0.1.x` (this release is `0.1.2`)
 - Dual license remains MIT OR Apache-2.0
 - Documentation framework stays bilingual with skills under `skills/`
 - Command surface for agents remains one-shot JSON on stdout
 - Product knobs no longer come from `DOCSRS_CLI_*` environment variables
 - Path sandbox env vars still work for home, config, and cache directories
 
-## Migrating from 0.1.x → 1.1.0
+## Migrating from 1.1.x → 0.1.2
 - Install or upgrade with `cargo install docsrs-cli --locked --force`
-- Run `docsrs-cli version --json` and confirm `data.version` is `1.1.0` (or any `1.1.x`)
+- Run `docsrs-cli version --json` and confirm `data.version` is `0.1.2` (or any `0.1.x`)
+- Re-read `docsrs-cli schema --cmd get-item|error --json` for optional `extraction` and `error.kind=budget`
+- Agent pagination loops must trust `data.query` / `data.page` / `data.per_page` after `--page-token` (echo matches the effective URL)
+- Treat body-cap failures as permanent for the same config (`kind=budget`, `retryable=false`, exit 74)
+- `doctor` top-level `ok` now mirrors `data.ok` (exit 78 when checks fail — do not treat envelope success as healthy)
+- Prefer `data.source_url` when present; top-level `source_url` remains a mirror
+- Explicit `--timeout 0` / `--connect-timeout 0` fail closed with exit 65 (`invalid_input`), not a silent hang
+- Hyphenated `item_path` segments normalize to underscores (`async-trait` → `async_trait`)
+- `--suggest` ranks exact → prefix → substring → edit-distance in one `all.html` fetch
+- Rustdoc chrome (`§`, "Copy item path") is scrubbed from markdown
+- Optional human smoke: `scripts/smoke-live.sh` (not CI)
+
+## Migrating from 0.1.x → 0.1.2 (via 1.1 contracts)
+- Install or upgrade with `cargo install docsrs-cli --locked --force`
+- Run `docsrs-cli version --json` and confirm `data.version` is `0.1.2` (or any `0.1.x`)
 - Re-read `docsrs-cli commands --json` if your agent cached an older argv tree
 - Re-read `docsrs-cli schema --cmd <name> --json` before parsing new required fields
-- Point skills and docs links at the 1.1 layout and contracts
+- Point skills and docs links at the 0.1.2 layout and contracts
+- Apply all 1.1.x breaking changes below, then the 0.1.2 notes above
 
 ### Breaking: search-in-crate default match
 - Default `--match` is now `prefix` (exact leaf or leaf prefix)
@@ -30,7 +45,7 @@
   "hits": [{ "name": "ser::Serialize", "kind": "trait", "url": "https://docs.rs/..." }]
 }
 ```
-- After (1.1.x default `prefix` + required fields):
+- After (1.1.x+ / 0.1.x default `prefix` + required fields):
 ```json
 {
   "crate_name": "serde",
@@ -67,7 +82,7 @@
   }
 }
 ```
-- After (1.1.x canonical wire field):
+- After (1.1.x+ / 0.1.x canonical wire field):
 ```json
 {
   "planned_url": "https://docs.rs/tokio/latest/tokio/struct.Runtime.html",
@@ -102,20 +117,22 @@
 - `readme` / `get-item` may include optional `resolved_version` (omitted when unknown; never JSON null)
 - Crate `resolved_version` is the SemVer of the target crate only (not dependency versions on the page)
 - Stdlib `resolved_version` is a channel name such as `stable` (example: `docsrs-cli readme std --json`)
-- Default User-Agent is `docsrs-cli/1.1.0 (+https://github.com/danilo-aguiar-br/docsrs-cli)`
+- Default User-Agent is `docsrs-cli/0.1.2 (+https://github.com/danilo-aguiar-br/docsrs-cli)`
 - JSON envelopes stay English; human stderr may use `--lang` / `DOCSRS_CLI_LANG`
 - Error envelopes expose `error.code`, `error.kind`, `error.message`, `error.retryable`, optional `retry_after_secs`
 - Live schema list now includes `schema`, `completions`, `error`, and `dry-run` via `schema --cmd`
+- 0.1.2 adds optional `get-item` field `extraction` (`method`|`item_page`) and error kind `budget` (exit 74, not retryable)
 
 ## Step-by-Step Migration
-- Upgrade the binary and confirm version `1.1.0`
+- Upgrade the binary and confirm version `0.1.2`
 - Move any former `DOCSRS_CLI_*` product env settings into flags or `config.toml`
 - Keep path isolation with `DOCSRS_CLI_HOME` / `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` as needed
 - Replace bare `search-in-crate` substring assumptions with `--match substring` when required
 - Update dry-run parsers to read `planned_params.crate_name`
 - Stop expecting auto-JSON from `completions` without `--json`
-- Teach agents about `--page-token`, `--suggest`, and `doctor --online`
+- Teach agents about `--page-token` echo fields, `--suggest`, `doctor` ok semantics, and `kind=budget`
 - Run `docsrs-cli doctor --json` (and optionally `doctor --online --json`) after path/config moves
+- Optional: run `scripts/smoke-live.sh` against live hosts before agent rollout
 
 ## JSON Schema Changes
 - Success envelopes keep `schema_version: 1`
@@ -128,6 +145,8 @@
   - optional `resolved_version` on readme and get-item
   - optional `hits[].score` on search-in-crate
   - optional `item_type` echo on search-in-crate when filtered
+  - optional `extraction` on get-item (`method`|`item_page`) since 0.1.2
+  - `budget` as a non-retryable `error.kind` (exit 74) since 0.1.2
 - `meta.next_page` / `meta.prev_page` remain the source for `--page-token`
 - `source_url` remains the provenance field on fetched document payloads
 - Before: agents often scraped HTML without a schema index

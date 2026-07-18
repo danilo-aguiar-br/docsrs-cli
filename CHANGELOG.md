@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+
+## [0.1.2] - 2026-07-18
+### Fixed
+- GAP-001: `search-crates --page-token` echoes `query`/`page`/`per_page`/`sort` from the **effective URL** (and dry-run `planned_params` match)
+- GAP-002: associated-method `get-item` extracts the method `details`/`section` by rustdoc anchor (not the full parent page); optional `extraction` field (`method`|`item_page`)
+- GAP-003: body over `max_body_bytes` is `error.kind=budget`, exit 74, **`retryable=false`** (no agent retry storms)
+- GAP-004: `doctor` top-level `ok` mirrors `data.ok` (exit 78 when unhealthy)
+- GAP-005: `--suggest` ranks exact → prefix → substring → edit-distance (one all.html fetch)
+- GAP-006: scrub rustdoc chrome (`§`, “Copy item path”) from markdown
+- GAP-007: `item_path` accepts hyphens and normalizes to underscores (rustc paths)
+- GAP-012: tree formatted with `cargo fmt`
+- GAP-013: deduplicated rustdoc comments on method/search helpers
+- GAP-015: explicit `--timeout 0` / `--connect-timeout 0` fail-closed with exit 65
+
+### Changed
+- Product version **0.1.2**
+- PRD / agent docs aligned: default `--match prefix`, wire field `crate_name`, dual license MIT OR Apache-2.0, env allowlist (paths/lang only for product sandbox)
+- Secondary bilingual docs synced to the 0.1.2 line (README, HOW_TO_USE, COOKBOOK, MIGRATION, SECURITY, INTEGRATIONS, CROSS_PLATFORM, TESTING, schemas README, AGENTS, skills, `llms*.txt`)
+
+### Added
+- `scripts/smoke-live.sh` human pre-release live smoke (not CI)
+- Offline fixture `tests/fixtures/docs_rs/method_runtime_new.html` for method extract golden
+
 ## [1.1.0] - 2026-07-18
 ### Changed
 - `search-in-crate` default match is now `prefix` (exact leaf / prefix leaf), not substring; use `--match substring` for legacy contains behavior
@@ -67,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MSRV 1.88
 
 
-[Unreleased]: https://github.com/danilo-aguiar-br/docsrs-cli/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/danilo-aguiar-br/docsrs-cli/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v0.1.2
 [1.1.0]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v1.1.0
 [0.1.0]: https://github.com/danilo-aguiar-br/docsrs-cli/releases/tag/v0.1.0

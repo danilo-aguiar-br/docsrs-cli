@@ -128,7 +128,7 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"# docsrs-cli XDG configuration
 # disable_retry = false
 # rate_limit_delay_ms = 1000
 # max_concurrency = 0
-# user_agent = "docsrs-cli/1.1.0 (+https://github.com/danilo-aguiar-br/docsrs-cli)"
+# user_agent = "docsrs-cli/0.1.2 (+https://github.com/danilo-aguiar-br/docsrs-cli)"
 # contact = "https://github.com/danilo-aguiar-br/docsrs-cli"
 # lang = "en"
 # crates_io_origin = "https://crates.io"
@@ -237,9 +237,7 @@ pub fn default_user_agent(contact: Option<&str>) -> String {
                 format!("{APP_NAME}/{APP_VERSION} ({c})")
             }
         }
-        _ => format!(
-            "{APP_NAME}/{APP_VERSION} (+https://github.com/danilo-aguiar-br/docsrs-cli)"
-        ),
+        _ => format!("{APP_NAME}/{APP_VERSION} (+https://github.com/danilo-aguiar-br/docsrs-cli)"),
     }
 }
 
@@ -439,7 +437,9 @@ pub fn resolve_config_dir(override_dir: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 /// Resolve config directory and report which layer won.
-pub fn resolve_config_dir_with_source(override_dir: Option<PathBuf>) -> (Option<PathBuf>, PathSource) {
+pub fn resolve_config_dir_with_source(
+    override_dir: Option<PathBuf>,
+) -> (Option<PathBuf>, PathSource) {
     if let Some(p) = override_dir {
         return (Some(p), PathSource::CliOrEnv);
     }
@@ -604,7 +604,6 @@ pub fn config_toml_under(dir: &Path) -> PathBuf {
 }
 
 impl Config {
-
     /// Wall-clock timeout duration (at least one second).
     pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_secs.max(1))

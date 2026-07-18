@@ -31,6 +31,8 @@ docsrs-cli search-crates async --page 1 --per-page 20 --sort downloads --json
 docsrs-cli search-crates async --page 1 --per-page 20 --json
 # leia data.meta.next_page em NEXT, depois:
 docsrs-cli search-crates --page-token "$NEXT" --json
+# eco de query/page/per_page/sort bate com a URL efetiva (não argv obsoleto)
+docsrs-cli --dry-run search-crates --page-token '?q=serde&per_page=2&page=2' --json
 ```
 
 ## Como Buscar a Visão Geral de um Crate
@@ -73,6 +75,22 @@ docsrs-cli get-item async-trait attribute async_trait --json
 docsrs-cli get-item tokio method runtime::Runtime::new --json
 docsrs-cli get-item tokio fn runtime::Runtime::new --json
 # página do tipo pai + #method.new; payload inclui item_name e resolved_version opcional
+# data.extraction é method quando o markdown fica escopado ao corpo do método
+```
+
+## Como Confirmar Scrub de Chrome do Rustdoc
+- Problema: o markdown não deve carregar chrome de UI do rustdoc no contexto do agente
+```bash
+docsrs-cli readme serde --json
+# data.markdown não tem marcadores de seção § nem strings de UI "Copy item path"
+```
+
+## Como Passar Segmentos de item_path Com Hífen
+- Problema: nomes estilo crates.io usam hífen, mas paths rustc usam underscore
+```bash
+docsrs-cli --dry-run get-item async-trait attribute async-trait --json
+# URL planejada usa async_trait; get-item live aceita hífen da mesma forma
+docsrs-cli get-item async-trait attribute async-trait --json
 ```
 
 ## Como Sugerir Símbolos Próximos em 404
@@ -80,6 +98,24 @@ docsrs-cli get-item tokio fn runtime::Runtime::new --json
 ```bash
 docsrs-cli get-item serde struct Serde --suggest --json
 docsrs-cli get-item tokio struct RuntimeX --suggest --json
+# sugestões ranqueiam exact → prefix → substring → edit-distance (um fetch de all.html)
+# typos como Parserx podem trazer Parser (trait) na mensagem de erro
+```
+
+## Como Tratar Budget de Body Sem Tempestade de Retry
+- Problema: a resposta passa de `--max-body-bytes` e o agente não deve girar
+```bash
+docsrs-cli --max-body-bytes 50 readme serde --json
+# exit 74, error.kind=budget, error.retryable=false
+# aumente --max-body-bytes (dentro do hard ceiling) em vez de retentar
+```
+
+## Como Falhar Fechado em Timeout Zero Explícito
+- Problema: provar que timeout 0 é rejeitado em vez de travar para sempre
+```bash
+docsrs-cli --timeout 0 version --json
+docsrs-cli --connect-timeout 0 doctor --json
+# ambos saem com exit 65 invalid_input
 ```
 
 ## Como Buscar Símbolos Dentro de um Crate
@@ -173,6 +209,7 @@ docsrs-cli doctor --online --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli config init --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --online --json
+# trate como saudável só quando exit for 0 e top-level ok e data.ok forem ambos true
 ```
 
 ## Como Cobrir Cada Top-Level Command Uma Vez
@@ -191,4 +228,6 @@ docsrs-cli schema --cmd get-item --json
 docsrs-cli completions bash >/dev/null
 docsrs-cli cache stats --json
 docsrs-cli config path --json
+# smoke live humano opcional (sem CI):
+# ./scripts/smoke-live.sh
 ```

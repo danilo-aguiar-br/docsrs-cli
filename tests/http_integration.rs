@@ -122,7 +122,7 @@ async fn retry_on_503_then_success() {
 }
 
 #[tokio::test]
-async fn body_cap_returns_network() {
+async fn body_cap_returns_budget_not_retryable() {
     allow_localhost();
     let server = MockServer::start().await;
     let big = "x".repeat(1024);
@@ -141,7 +141,8 @@ async fn body_cap_returns_network() {
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = url::Url::parse(&format!("{}/big", server.uri())).unwrap();
     let err = http.get_html(&url).await.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::Network);
+    assert_eq!(err.kind(), ErrorKind::Budget);
+    assert!(!err.retryable());
     assert!(err.message().contains("max_body_bytes"));
 }
 
@@ -173,7 +174,16 @@ async fn docs_rs_readme_fixture_via_mock() {
 #[tokio::test]
 async fn all_html_fixture_kinds() {
     let html = include_str!("fixtures/docs_rs/all_html_sample.html");
-    let hits = docs_rs::parse_all_html_hits(html, "demo", "1.0.0", "", None, 100, docsrs_cli::domain::MatchMode::Prefix).unwrap();
+    let hits = docs_rs::parse_all_html_hits(
+        html,
+        "demo",
+        "1.0.0",
+        "",
+        None,
+        100,
+        docsrs_cli::domain::MatchMode::Prefix,
+    )
+    .unwrap();
     assert!(
         hits.iter()
             .any(|h| h.kind == "struct" && h.name == "Client")
@@ -183,7 +193,16 @@ async fn all_html_fixture_kinds() {
     assert!(hits.iter().any(|h| h.kind == "union"));
     assert!(hits.iter().any(|h| h.name == "de::Deserialize"));
     assert!(!hits.iter().any(|h| h.name == "skipme"));
-    let limited = docs_rs::parse_all_html_hits(html, "demo", "1.0.0", "", None, 2, docsrs_cli::domain::MatchMode::Prefix).unwrap();
+    let limited = docs_rs::parse_all_html_hits(
+        html,
+        "demo",
+        "1.0.0",
+        "",
+        None,
+        2,
+        docsrs_cli::domain::MatchMode::Prefix,
+    )
+    .unwrap();
     assert_eq!(limited.len(), 2);
     assert_eq!(limited[0].name, "Client");
 }
@@ -375,9 +394,18 @@ async fn search_in_crate_at_404() {
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = docs_rs::all_html_url_on_origin(&server.uri(), "gone", "latest").unwrap();
-    let err = docs_rs::search_in_crate_at(&http, "gone", "latest", "x", None, 10, docsrs_cli::domain::MatchMode::Prefix, &url)
-        .await
-        .unwrap_err();
+    let err = docs_rs::search_in_crate_at(
+        &http,
+        "gone",
+        "latest",
+        "x",
+        None,
+        10,
+        docsrs_cli::domain::MatchMode::Prefix,
+        &url,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
 }
 
@@ -745,9 +773,18 @@ async fn search_in_crate_truncated_true_when_limit_cuts() {
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = docs_rs::all_html_url_on_origin(&server.uri(), "demo", "1.0.0").unwrap();
-    let data = docs_rs::search_in_crate_at(&http, "demo", "1.0.0", "", None, 2, docsrs_cli::domain::MatchMode::Prefix, &url)
-        .await
-        .unwrap();
+    let data = docs_rs::search_in_crate_at(
+        &http,
+        "demo",
+        "1.0.0",
+        "",
+        None,
+        2,
+        docsrs_cli::domain::MatchMode::Prefix,
+        &url,
+    )
+    .await
+    .unwrap();
     assert!(data.total > 2);
     assert_eq!(data.emitted, 2);
     assert!(data.truncated);
@@ -769,9 +806,18 @@ async fn search_in_crate_limit_zero_emits_empty_hits() {
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = docs_rs::all_html_url_on_origin(&server.uri(), "demo", "1.0.0").unwrap();
-    let data = docs_rs::search_in_crate_at(&http, "demo", "1.0.0", "", None, 0, docsrs_cli::domain::MatchMode::Prefix, &url)
-        .await
-        .unwrap();
+    let data = docs_rs::search_in_crate_at(
+        &http,
+        "demo",
+        "1.0.0",
+        "",
+        None,
+        0,
+        docsrs_cli::domain::MatchMode::Prefix,
+        &url,
+    )
+    .await
+    .unwrap();
     assert!(data.total > 0);
     assert_eq!(data.emitted, 0);
     assert!(data.hits.is_empty());

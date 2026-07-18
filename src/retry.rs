@@ -32,8 +32,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 
 use crate::config::Config;
 
@@ -73,10 +73,7 @@ impl RetryConfig {
         } else {
             cfg.retry_base_ms
         };
-        let max_delay_ms = cfg
-            .retry_max_delay_ms
-            .min(HARD_MAX_DELAY_MS)
-            .max(base_ms);
+        let max_delay_ms = cfg.retry_max_delay_ms.min(HARD_MAX_DELAY_MS).max(base_ms);
         let enabled = !cfg.disable_retry && max_retries > 0;
         Self {
             max_retries,
@@ -303,7 +300,10 @@ mod tests {
             }
         );
         assert_eq!(
-            classify_http_status(StatusCode::SERVICE_UNAVAILABLE, Some(Duration::from_secs(1))),
+            classify_http_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some(Duration::from_secs(1))
+            ),
             RetryClass::RateLimited {
                 retry_after: Some(Duration::from_secs(1))
             }
@@ -320,7 +320,10 @@ mod tests {
         h.insert(RETRY_AFTER, HeaderValue::from_static("7"));
         assert_eq!(parse_retry_after(&h), Some(Duration::from_secs(7)));
 
-        h.insert(RETRY_AFTER, HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"));
+        h.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
         assert_eq!(parse_retry_after(&h), None);
 
         h.insert(RETRY_AFTER, HeaderValue::from_static(""));

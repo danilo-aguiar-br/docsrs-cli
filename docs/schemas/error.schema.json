@@ -27,14 +27,15 @@
         },
         "kind": {
           "type": "string",
-          "description": "Stable snake_case ErrorKind discriminant"
+          "description": "Stable snake_case ErrorKind discriminant on the wire (usage|invalid_input|not_found|rate_limited|unavailable|timeout|network|budget|parse|config|internal|broken_pipe|canceled). budget = local body/output budget exceeded (exit 74, retryable=false). canceled covers SIGINT/SIGTERM (exit 130/143); internal Interrupted/Terminated map to canceled on the wire."
         },
         "message": {
           "type": "string",
           "description": "Technical English message (never secrets)"
         },
         "retryable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True only for transient failures (rate_limited, unavailable, timeout, network). budget is permanent for the same config."
         },
         "retry_after_secs": {
           "type": "integer",

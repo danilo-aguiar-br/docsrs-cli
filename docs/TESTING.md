@@ -60,7 +60,17 @@ TOML
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked --all-targets
+cargo build --release
 ```
+
+## Human live smoke (pre-release, not CI)
+```bash
+cargo build --release
+./scripts/smoke-live.sh
+```
+- Uses `--config-dir` / `--cache-dir` temp dirs (XDG via flags; no product env knobs)
+- Asserts page-token echo, `budget` non-retryable, timeout 0 fail-closed, version 0.1.2
+- Requires network; fail open if hosts are down
 
 ## Environment Variables
 - `DOCSRS_CLI_NETWORK_TESTS` enables crates.io and docs.rs live tests
@@ -68,7 +78,7 @@ cargo test --locked --all-targets
 - `DOCSRS_CLI_ALLOW_LOCALHOST` allows local mock origins in controlled tests
 - `DOCSRS_CLI_HOME` isolates config and cache during tests
 - Path overrides `DOCSRS_CLI_CONFIG_DIR` and `DOCSRS_CLI_CACHE_DIR` remain available
-- There are no product env knobs for origins, retries, UA, or timeouts in 1.1.x
+- There are no product env knobs for origins, retries, UA, or timeouts in 0.1.x
 
 ## Troubleshooting
 - If live tests fail, confirm network and host availability first

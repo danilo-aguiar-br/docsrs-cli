@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli search-crates success data",
   "type": "object",
-  "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms. Optional hit/meta fields are omitted when absent (skip_serializing_if / not serialized as null).",
+  "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms. Fields query, page, per_page, and sort echo the effective request URL (including after --page-token), not raw CLI argv when a token overrides pagination. Optional hit/meta fields are omitted when absent (skip_serializing_if / not serialized as null).",
   "required": [
     "query",
     "page",

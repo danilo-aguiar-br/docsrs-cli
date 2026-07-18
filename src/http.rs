@@ -416,10 +416,7 @@ impl HttpClient {
         }
 
         let in_proc = {
-            let map = self
-                .last_host_hit
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let map = self.last_host_hit.lock().unwrap_or_else(|e| e.into_inner());
             map.get(host).and_then(|prev| {
                 let elapsed = prev.elapsed();
                 if elapsed < delay {
@@ -437,10 +434,7 @@ impl HttpClient {
     }
 
     fn touch_host_clock(&self, host: &str) {
-        let mut map = self
-            .last_host_hit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut map = self.last_host_hit.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(host.to_string(), Instant::now());
     }
 
@@ -613,8 +607,9 @@ async fn read_body_capped(resp: reqwest::Response, max_bytes: u64) -> AppResult<
     if let Some(n) = content_length
         && n > max_bytes
     {
+        // Permanent local budget — not a transport failure; do not auto-retry.
         return Err(AppError::new(
-            ErrorKind::Network,
+            ErrorKind::Budget,
             format!("response body exceeds max_body_bytes ({max_bytes})"),
         ));
     }
@@ -639,9 +634,9 @@ async fn read_body_capped(resp: reqwest::Response, max_bytes: u64) -> AppResult<
             AppError::with_source(ErrorKind::Network, "failed reading response body", e)
         })?;
         if (buf.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
-            // Body cap is a transport/resource limit, not user input validation.
+            // Permanent local budget — not a transport failure; do not auto-retry.
             return Err(AppError::new(
-                ErrorKind::Network,
+                ErrorKind::Budget,
                 format!("response body exceeds max_body_bytes ({max_bytes})"),
             ));
         }

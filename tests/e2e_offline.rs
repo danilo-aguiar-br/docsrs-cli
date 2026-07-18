@@ -363,6 +363,7 @@ async fn e2e_cli_overrides_and_doctor_fail() {
     let (code, out, _) = run_with_config(dir.path(), &["doctor", "--json"]).await;
     assert_eq!(code, ExitCode::from(78), "out={out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["ok"], false);
     assert_eq!(v["data"]["ok"], false);
 
     let (code, out, _) = run_with_config(dir.path(), &["doctor"]).await;

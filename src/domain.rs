@@ -149,6 +149,7 @@ impl ItemPath {
                 "item path has no segments",
             ));
         }
+        let mut segments = Vec::with_capacity(parts.len());
         for seg in &parts {
             if seg == "." || seg == ".." {
                 return Err(AppError::new(
@@ -162,18 +163,23 @@ impl ItemPath {
                     format!("item path segment contains whitespace: '{seg}'"),
                 ));
             }
-            if !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            // Accept hyphen (crates.io style) and normalize to underscore (rustc paths).
+            if !seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 return Err(AppError::new(
                     ErrorKind::InvalidInput,
                     format!(
-                        "invalid item path segment '{seg}' (use letters, digits, underscore; separate with :: or /)"
+                        "invalid item path segment '{seg}' (use letters, digits, underscore or hyphen; hyphens normalize to underscore; separate with :: or /)"
                     ),
                 ));
             }
+            segments.push(crate::item_kind::rustc_crate_name(seg));
         }
         Ok(Self {
             raw: path.to_string(),
-            segments: parts,
+            segments,
         })
     }
 
@@ -402,6 +408,15 @@ mod tests {
         assert_eq!(
             ItemPath::parse("async_trait").unwrap().segments(),
             &["async_trait".to_string()]
+        );
+        // Hyphen normalizes to underscore (rustc path).
+        assert_eq!(
+            ItemPath::parse("async-trait").unwrap().segments(),
+            &["async_trait".to_string()]
+        );
+        assert_eq!(
+            ItemPath::parse("foo-bar::Baz-Quux").unwrap().segments(),
+            &["foo_bar".to_string(), "Baz_Quux".to_string()]
         );
     }
 

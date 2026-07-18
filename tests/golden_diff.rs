@@ -52,8 +52,8 @@ fn golden_readme_markdown_from_fixture() {
         empty: false,
         truncated: false,
         source_url: "https://docs.rs/demo/latest/demo/index.html".into(),
-            cache_hit: false,
-        };
+        cache_hit: false,
+    };
     let md = render_readme_markdown(&data);
     // Assert stable header + key content; body converter may add fences.
     assert!(md.starts_with("# demo Documentation\n"));
@@ -82,8 +82,9 @@ fn golden_get_item_markdown_structure() {
         truncated: false,
         source_url: "https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html".into(),
         title: "tokio::runtime::Runtime (struct)".into(),
-            cache_hit: false,
-        };
+        cache_hit: false,
+        extraction: None,
+    };
     // Prefer stable synthetic body for exact golden match.
     let md = render_item_markdown(&data);
     let golden = include_str!("golden/markdown/get-item.md");

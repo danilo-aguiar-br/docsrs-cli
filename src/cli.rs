@@ -57,11 +57,11 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
-    /// Wall-clock timeout in seconds
+    /// Wall-clock timeout in seconds (must be >= 1 when set)
     #[arg(long, global = true)]
     pub timeout: Option<u64>,
 
-    /// Connect timeout in seconds
+    /// Connect timeout in seconds (must be >= 1 when set)
     #[arg(long, global = true)]
     pub connect_timeout: Option<u64>,
 
@@ -197,7 +197,7 @@ pub enum Commands {
         /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
-        /// On 404, suggest nearby symbols from all.html (extra request).
+        /// On 404, suggest nearby symbols from all.html (one extra request; exact/prefix/substring/edit-distance).
         #[arg(long)]
         suggest: bool,
     },

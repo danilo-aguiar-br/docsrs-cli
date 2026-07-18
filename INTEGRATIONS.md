@@ -12,7 +12,7 @@
 - Online doctor probes for crates.io and docs.rs when opted in
 
 
-## Flags Added in 1.1.0
+## Flags Added in 1.1.0 (still current on 0.1.x)
 - `--match exact|prefix|substring` on `search-in-crate` (default `prefix`)
 - `--page-token` on `search-crates` for opaque pagination from `meta.next_page`
 - `--suggest` on `get-item` to list nearby symbols after a 404
@@ -21,6 +21,15 @@
 - Associated methods resolve to parent pages with `#method.name` and `item_name`
 - Product knobs use CLI flags and XDG `config.toml` only, not product `DOCSRS_CLI_*` env vars
 - Optional `resolved_version` on readme and get-item (stdlib channel is `stable`)
+
+## Contract Hardening in 0.1.2
+- `--page-token` echoes effective `query` / `page` / `per_page` / `sort` from the planned URL
+- Associated-method `get-item` scopes markdown to the method (`data.extraction` = `method`|`item_page`)
+- Body over `--max-body-bytes` is `error.kind=budget` (exit 74, `retryable=false`)
+- `doctor` top-level `ok` mirrors `data.ok` (exit 78 when unhealthy)
+- `--suggest` ranks exact → prefix → substring → edit-distance
+- Explicit `--timeout 0` / `--connect-timeout 0` fail-closed (exit 65)
+- Human smoke script: `scripts/smoke-live.sh`
 
 
 ## Flag Aliases
@@ -51,12 +60,14 @@
 - Invoke as a one-shot subprocess per operation
 - Pass `--json` or rely on non-TTY auto-JSON
 - Parse `ok`, `command`, `data`, and `duration_ms` on success
-- Parse `ok:false` and `error.kind` on failure
-- Read `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode` when present
+- Parse `ok:false`, `error.kind`, and `error.retryable` on failure
+- Never retry `kind=budget` (exit 74); raise `--max-body-bytes` instead
+- Read `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode`, optional `data.extraction` when present
+- Treat doctor healthy only when top-level `ok` and `data.ok` are both true
 - Start with `commands --json` and `schema --cmd <name> --json`
 - Prefer `--match prefix` or `exact` for precise symbol lookup
-- Paginate with `data.meta.next_page` into `--page-token`
-- Recover 404s with `get-item ... --suggest`
+- Paginate with `data.meta.next_page` into `--page-token` and trust effective-URL echo fields
+- Recover 404s with `get-item ... --suggest` (cascade match in the error message)
 
 
 ## Codex Cursor and OpenCode

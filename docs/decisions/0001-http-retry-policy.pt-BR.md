@@ -17,7 +17,8 @@
 - Kill switch: apenas `--disable-retry` / TOML `disable_retry` / `max_retries=0`
 - Settings de produto não são lidos de variáveis de ambiente `DOCSRS_CLI_*`
 - Conjunto de retry: `429`, `500`, `502`, `503`, `504` e erros de transporte reqwest timeout / connect / request
-- Nunca fazer retry de `4xx` permanente, parse, body cap ou cancel
+- Nunca fazer retry de `4xx` permanente, parse, body cap (`ErrorKind::Budget`, exit 74, `retryable=false`) ou cancel
+- Exit `74` é compartilhado com `network` retryable; agentes devem ramificar em `error.kind` / `error.retryable`, nunca só no exit code
 - Backoff: full jitter `uniform(0..=min(base*2^n, max_delay))` com `tokio::time::sleep` monotônico e checks de cancel entre fatias
 - `Retry-After`: somente delta-seconds (sem dependência de parser HTTP-date)
 - Honrar `Retry-After` para `429` e `503` quando presente; senão usar a fórmula
@@ -30,7 +31,7 @@
 - Operadores podem desligar retries durante incidentes sem rebuild
 - `Retry-After` em HTTP-date cai na fórmula (limitação documentada)
 - Circuit breaker / retry budget / hedged requests permanecem fora de escopo para uma CLI one-shot de GET único
-- Documentação do kill switch permanece alinhada a flags 1.1.x + config TOML
+- Documentação do kill switch permanece alinhada a flags 0.1.x + config TOML
 
 ## Alternativas consideradas
 - Middleware reqwest-retry: deps extras; integração de cancel mais difícil; rejeitado

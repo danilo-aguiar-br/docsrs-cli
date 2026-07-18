@@ -7,7 +7,7 @@
 - JSON estável vence scraping frágil de HTML
 - Um processo por pergunta mantém o estado honesto
 - Exit codes tornam a política de retry mecânica
-- A linha de produto é `1.1.x` (`version` reporta `1.1.0`)
+- A linha de produto é `0.1.x` (`version` reporta `0.1.2`)
 
 ## Economia
 - Cache em disco remove downloads repetidos dentro do TTL
@@ -49,23 +49,28 @@
 - Rode `docsrs-cli schema --cmd <name> --json` antes de parsear campos novos
 - Rode `docsrs-cli doctor --json` quando paths ou TLS parecerem errados
 - Rode `docsrs-cli doctor --online --json` quando precisar de sondas live de host
-- Confirme que `docsrs-cli version --json` reporta `1.1.0` (ou 1.1.x mais novo)
+- Confirme que `docsrs-cli version --json` reporta `0.1.2` (ou 0.1.x mais novo)
 
 ## Contrato: Envelope de Sucesso
-- JSON de sucesso inclui `schema_version`, `ok:true`, `command`, `data`, `duration_ms`
-- Leia `data` só depois de `ok` ser true
-- Campos de proveniência como `source_url` identificam a página buscada
+- JSON de sucesso inclui `schema_version`, `ok`, `command`, `data`, `duration_ms`
+- Na maioria dos comandos, sucesso significa `ok:true`
+- Exceção (`doctor`): top-level `ok` espelha `data.ok` (pode ser `false` com exit 78 quando os checks falham)
+- Leia `data` depois de inspecionar `ok` e o exit code do processo
+- Prefira `data.source_url` quando presente; `source_url` no topo do envelope é espelho nas ops de fetch
 - Sucesso de dry-run pode incluir `dry_run:true` e campos de URL planejada
 
 ## Contrato: Campos JSON de data
-- data de `search-crates`: `query`, `page`, `per_page`, `sort`, `hits`, `meta`, `cache_hit`
+- data de `search-crates`: `query`, `page`, `per_page`, `sort`, `hits`, `meta`, `cache_hit` — campos de eco sempre batem com a URL efetiva (incluindo `--page-token`)
 - meta de `search-crates` pode incluir `next_page` / `prev_page` para `--page-token`
 - data de `readme`: `crate_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `cache_hit`; `resolved_version` opcional
-- data de `get-item`: `crate_name`, `item_type`, `item_path`, `item_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `title`, `cache_hit`; `resolved_version` opcional
+- data de `get-item`: `crate_name`, `item_type`, `item_path`, `item_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `title`, `cache_hit`; `resolved_version` opcional; `extraction` opcional (`method`|`item_page`)
 - data de `search-in-crate`: `crate_name`, `query`, `version`, `match_mode`, `total`, `emitted`, `hits`, `truncated`, `source_url`, `cache_hit`; `item_type` opcional
+- default de `--match` em `search-in-crate` é `prefix` (use `substring` para contains legado)
 - hits de `search-in-crate`: `name`, `kind`, `url`; `score` opcional
 - `cache_hit` é só cache local em disco; nunca telemetria remota
+- Markdown de readme/get-item remove chrome rustdoc (`§`, "Copy item path")
 - Campos opcionais são omitidos quando ausentes (nunca JSON null)
+- Campo de wire é sempre `crate_name` (nunca `crate`)
 
 ## Contrato: Envelope de Erro
 - JSON de falha é envelope de topo: `schema_version`, `ok:false`, `error`
@@ -74,29 +79,34 @@
 - A mensagem é inglês técnico; nunca segredos nem bodies crus de resposta
 - Falhas no caminho humano deixam stdout vazio e escrevem uma linha no stderr
 - Ramifique pelo exit code do processo antes de confiar em qualquer campo
-- Retry só quando o exit é `69`, `74` ou `124` e/ou `error.retryable` é true
-- `get-item --suggest` pode enriquecer paths not-found com símbolos próximos (só na mensagem de erro)
+- Retry só quando `error.retryable` é true (tipicamente rate_limited/unavailable/timeout/network)
+- Não retente `kind=budget` (body acima de `--max-body-bytes`; aumente o teto)
+- Exit `74` é compartilhado por `network` (retryable) e `budget` (não retryable) — leia sempre `error.kind` / `error.retryable`
+- `--timeout 0` / `--connect-timeout 0` explícitos falham fechado com exit `65`
+- `max_output_bytes` trunca payloads de sucesso (`truncated:true`); body acima do teto é erro duro (`budget`)
+- `get-item --suggest` pode enriquecer paths not-found com símbolos próximos (só na mensagem; cascata exact→prefix→substring→edit-distance)
 - Schema máquina: [error.schema.json](schemas/error.schema.json)
 
 ## Contrato: Exit Codes
 - `0` sucesso
 - `2` falha de parse do clap
 - `64` usage
-- `65` input inválido ou parse
+- `65` input inválido ou parse (inclui timeout 0 explícito)
 - `66` not found
 - `69` rate limited ou unavailable
 - `70` internal
-- `74` network
-- `78` config
+- `74` network ou budget (desambigue com `error.kind`)
+- `78` config (doctor não saudável também sai 78; top-level `ok` espelha `data.ok`)
 - `124` timeout
 - `130` SIGINT
 - `141` broken pipe no stdout
 - `143` SIGTERM ou SIGHUP
 
 ## Contrato: Retry
-- Retente apenas `69`, `74` e `124` com backoff
+- Retente só quando `error.retryable` é true — tipicamente exit `69`, `74` retryable (`kind=network`) e `124`
 - Honre `Retry-After` quando o upstream enviar
-- Não retente `64`, `65`, `66` ou `78` sem mudar inputs
+- Não retente `64`, `65`, `66`, `78` ou `kind=budget` sem mudar inputs/config
+- Nunca trate todo exit `74` como retryable
 - Desabilite retries com `--disable-retry`, TOML `disable_retry` ou `max_retries=0`
 - Não há kill switch de retry por env de produto
 
@@ -171,14 +181,16 @@ docsrs-cli --dry-run search-in-crate reqwest Client --json
 
 ## Contrato: Regras de get-item
 - `item_path` aceita separadores `::` ou `/`
+- `item_path` aceita `-` e normaliza segmentos no estilo rustc (`async-trait` → `async_trait` na URL)
 - Prefixo opcional do crate é permitido
 - Kinds aceitos incluem module, struct, trait, enum, union, fn, function, method, type, const, constant, static, macro, attr, attribute, derive
 - Alias `method` mapeia como `fn` / `function`
 - Métodos associados como `Runtime::new` resolvem para a página do tipo pai mais `#method.name`
+- Markdown de método pode definir `extraction` como `method` (escopado) ou `item_page` (fallback da página pai)
 - Payload sempre inclui `item_name`
 - `resolved_version` opcional é o SemVer concreto somente do crate alvo, ou o canal da stdlib (`stable`) quando conhecido
 - Nunca trate versões de dependências na página do docs.rs como a versão do crate
-- `--suggest` em 404 faz request extra de `all.html` e lista símbolos próximos
+- `--suggest` em 404 faz request extra de `all.html` e lista símbolos próximos (cascata exact→prefix→substring→edit-distance)
 - `std`, `core` e `alloc` resolvem via doc.rust-lang.org
 - Exemplo de canal stdlib: `docsrs-cli readme std --json` → `resolved_version` é `stable` quando conhecido
 
@@ -210,7 +222,7 @@ docsrs-cli --dry-run search-in-crate reqwest Client --json
 - Settings de produto: flags CLI > `config.toml` XDG > defaults
 - Knobs de produto não são lidos de vars de env `DOCSRS_CLI_*`
 - Path sandbox ainda permite `DOCSRS_CLI_HOME`, `DOCSRS_CLI_CONFIG_DIR`, `DOCSRS_CLI_CACHE_DIR`
-- User-Agent default é `docsrs-cli/1.1.0 (+https://github.com/danilo-aguiar-br/docsrs-cli)`
+- User-Agent default é `docsrs-cli/0.1.2 (+https://github.com/danilo-aguiar-br/docsrs-cli)`
 - User-Agent: `--user-agent` ou TOML `user_agent`; contact: TOML `contact`
 - Dry-run `planned_params` usam `crate_name` (não `crate`)
 - Forma do envelope dry-run está em [dry-run.schema.json](schemas/dry-run.schema.json)

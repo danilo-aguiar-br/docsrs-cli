@@ -91,6 +91,9 @@ pub struct GetItemData {
     pub title: String,
     /// True when the HTTP body was served from the local disk cache.
     pub cache_hit: bool,
+    /// How markdown was scoped for associated methods: `method` or `item_page`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<String>,
 }
 
 /// Single all.html hit.
@@ -266,7 +269,10 @@ pub fn get_item_url_on_origin_with_parent_kind(
 
     // Associated method: Type::method → parent page + #method.name
     if is_method_path(kind, &segs) {
-        let method_name = segs.last().expect("is_method_path requires >=2 segs").clone();
+        let method_name = segs
+            .last()
+            .expect("is_method_path requires >=2 segs")
+            .clone();
         let parent_name = segs[segs.len() - 2].clone();
         let parent_kind = parent_kind_override.unwrap_or(ItemKind::Struct);
         let mod_parts: Vec<String> = if segs.len() == 2 {
@@ -552,12 +558,27 @@ pub fn sanitize_html_fragment(html: &str) -> String {
 
 fn html_to_markdown(html: &str) -> AppResult<String> {
     let cleaned = sanitize_html_fragment(html);
-    htmd::convert(&cleaned).map_err(|e| {
+    let md = htmd::convert(&cleaned).map_err(|e| {
         AppError::new(
             ErrorKind::Parse,
             format!("HTML to Markdown conversion failed: {e}"),
         )
-    })
+    })?;
+    Ok(scrub_rustdoc_chrome(&md))
+}
+
+/// Strip rustdoc UI chrome that pollutes LLM context (`§`, "Copy item path", …).
+pub fn scrub_rustdoc_chrome(md: &str) -> String {
+    let mut out = md.to_string();
+    // Common rustdoc heading anchor glyph left by htmd.
+    out = out.replace('§', "");
+    // "Copy item path" UI control sometimes survives as text.
+    out = out.replace("Copy item path", "");
+    // Collapse accidental double spaces left after removals (not full reflow).
+    while out.contains("  ") {
+        out = out.replace("  ", " ");
+    }
+    out
 }
 
 fn first_inner_html(document: &Html, selectors: &[&str]) -> Option<String> {
@@ -791,14 +812,16 @@ pub async fn fetch_item_at(
         .map(str::to_string);
     let body = resp.body.clone();
     let method_anchor_cpu = method_anchor.clone();
-    let (markdown, empty) = http
+    let ((markdown, empty), extraction) = http
         .budget()
         .run_cpu_bound(move || {
             let text = decode_utf8(&body)?;
             if let Some(ref m) = method_anchor_cpu {
-                extract_method_markdown_from_html(&text, m)
+                let (md, empty, scope) = extract_method_markdown_scoped(&text, m)?;
+                Ok(((md, empty), Some(scope.to_string())))
             } else {
-                extract_item_markdown_from_html(&text)
+                let (md, empty) = extract_item_markdown_from_html(&text)?;
+                Ok(((md, empty), None))
             }
         })
         .await?;
@@ -834,6 +857,7 @@ pub async fn fetch_item_at(
         source_url: source_url.to_string(),
         title,
         cache_hit: resp.cache_hit,
+        extraction,
     })
 }
 /// Parse all.html and filter symbols (production docs.rs).
@@ -883,14 +907,7 @@ pub async fn search_in_crate_on_origin(
 ) -> AppResult<SearchInCrateData> {
     let url = all_html_url_on_origin(origin, crate_name, version)?;
     search_in_crate_at(
-        http,
-        crate_name,
-        version,
-        query,
-        item_type,
-        limit,
-        match_mode,
-        &url,
+        http, crate_name, version, query, item_type, limit, match_mode, &url,
     )
     .await
 }
@@ -951,7 +968,6 @@ pub async fn search_in_crate_at(
         })
         .await
 }
-
 
 /// Join relative/absolute/full href against crate rustdoc base.
 ///
@@ -1060,7 +1076,9 @@ fn filter_hits_parallel(
     let mapped: AppResult<Vec<Option<ClassifiedHit>>> = candidates
         .into_par_iter()
         .enumerate()
-        .map(|(idx, (name, href))| classify_hit_row(idx, name, &href, base, q, item_type, match_mode))
+        .map(|(idx, (name, href))| {
+            classify_hit_row(idx, name, &href, base, q, item_type, match_mode)
+        })
         .collect();
     let rows: Vec<ClassifiedHit> = mapped?.into_iter().flatten().collect();
     finalize_hits(rows, limit)
@@ -1153,42 +1171,71 @@ pub fn extract_item_markdown_from_html(html: &str) -> AppResult<(String, bool)> 
 
 /// Extract markdown for a single associated method by rustdoc `id="method.X"`.
 ///
-/// Falls back to the full item page when the anchor is missing.
+/// Locates the method anchor and prefers the enclosing `details.method-toggle`
+/// (signature + docblock). Falls back to the full item page when the anchor is
+/// missing (`extraction` = `item_page`).
 ///
 /// # Errors
 ///
 /// Returns [`ErrorKind::Parse`] when HTML→Markdown conversion fails.
-/// Extract markdown for a single associated method by rustdoc `id="method.X"`.
-///
-/// When the method anchor is present, converts the parent section if found;
-/// otherwise falls back to the full item page (still useful with `#method.` URL).
-///
-/// # Errors
-///
-/// Returns [`ErrorKind::Parse`] when HTML→Markdown conversion fails.
-pub fn extract_method_markdown_from_html(html: &str, method_name: &str) -> AppResult<(String, bool)> {
-    let needle_dq = format!("id=\"method.{method_name}\"");
-    let needle_sq = format!("id='method.{method_name}'");
-    if !html.contains(&needle_dq) && !html.contains(&needle_sq) {
-        return extract_item_markdown_from_html(html);
-    }
-    // Prefer a section/details/div that wraps the method id when scrapable.
-    let document = Html::parse_document(html);
-    // Attribute selectors with dots need care; use main-content fallback.
-    if let Ok(sel) = Selector::parse("#main-content") {
-        if let Some(main) = document.select(&sel).next() {
-            let frag = main.html();
-            if frag.contains(&needle_dq) || frag.contains(&needle_sq) {
-                let md = html_to_markdown(&frag)?;
-                let empty = md.trim().is_empty();
-                return Ok((md, empty));
-            }
-        }
-    }
-    extract_item_markdown_from_html(html)
+pub fn extract_method_markdown_from_html(
+    html: &str,
+    method_name: &str,
+) -> AppResult<(String, bool)> {
+    let (md, empty, _) = extract_method_markdown_scoped(html, method_name)?;
+    Ok((md, empty))
 }
 
-/// Build SearchInCrateData from HTML body without network (offline tests).
+/// Like [`extract_method_markdown_from_html`] but reports extraction scope.
+///
+/// Returns `(markdown, empty, scope)` where `scope` is `"method"` or `"item_page"`.
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Parse`] when HTML→Markdown conversion fails.
+pub fn extract_method_markdown_scoped(
+    html: &str,
+    method_name: &str,
+) -> AppResult<(String, bool, &'static str)> {
+    let want_id = format!("method.{method_name}");
+    let document = Html::parse_document(html);
+    // Attribute selector avoids CSS id issues with dots in method.X.
+    let sel = match Selector::parse(&format!(r#"[id="{want_id}"]"#)) {
+        Ok(s) => s,
+        Err(_) => {
+            let (md, empty) = extract_item_markdown_from_html(html)?;
+            return Ok((md, empty, "item_page"));
+        }
+    };
+    if let Some(anchor) = document.select(&sel).next() {
+        let frag_html = method_container_html(anchor);
+        let md = html_to_markdown(&frag_html)?;
+        let empty = md.trim().is_empty();
+        if !empty {
+            return Ok((md, empty, "method"));
+        }
+    }
+    let (md, empty) = extract_item_markdown_from_html(html)?;
+    Ok((md, empty, "item_page"))
+}
+
+/// Prefer the enclosing rustdoc `details.method-toggle` (signature + docs).
+fn method_container_html(anchor: scraper::ElementRef<'_>) -> String {
+    let mut node = anchor.parent();
+    while let Some(n) = node {
+        if let Some(el) = scraper::ElementRef::wrap(n) {
+            if el.value().name() == "details" {
+                return el.html();
+            }
+            node = el.parent();
+        } else {
+            break;
+        }
+    }
+    // Fall back to the section/element that carries the method id.
+    anchor.html()
+}
+
 /// Build SearchInCrateData from HTML body without network (offline tests).
 ///
 /// `--limit 0` is honoured: `emitted = 0`, `hits = []`, and `truncated` is true
@@ -1347,7 +1394,16 @@ mod tests {
           <a href="attr.x.html">x</a>
           <a href="derive.D.html">D</a>
         </div></body></html>"#;
-        let hits = parse_all_html_hits(html, "demo", "1.0.0", "", None, 100, crate::domain::MatchMode::Prefix).unwrap();
+        let hits = parse_all_html_hits(
+            html,
+            "demo",
+            "1.0.0",
+            "",
+            None,
+            100,
+            crate::domain::MatchMode::Prefix,
+        )
+        .unwrap();
         assert_eq!(hits.len(), 6);
         assert_eq!(hits[0].name, "A");
         assert_eq!(hits[0].kind, "struct");
@@ -1409,7 +1465,7 @@ mod tests {
             1,
             MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
-        false,
+            false,
         )
         .unwrap();
         assert_eq!(data.total, 1);
@@ -1430,7 +1486,7 @@ mod tests {
             2,
             MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
-        false,
+            false,
         )
         .unwrap();
         assert!(data.total > 2, "fixture must have more than 2 hits");
@@ -1445,7 +1501,7 @@ mod tests {
             1000,
             MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
-        false,
+            false,
         )
         .unwrap();
         assert_eq!(full.total, full.emitted);
@@ -1464,7 +1520,7 @@ mod tests {
             0,
             MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
-        false,
+            false,
         )
         .unwrap();
         assert!(data.total > 0, "fixture must have hits for total");
@@ -1584,5 +1640,41 @@ mod tests {
         let (md, empty) = extract_item_markdown_from_html("<html><body></body></html>").unwrap();
         assert!(empty);
         assert!(md.is_empty());
+    }
+
+    #[test]
+    fn method_extract_scopes_to_details_not_full_page() {
+        let html = include_str!("../tests/fixtures/docs_rs/method_runtime_new.html");
+        let (md, empty, scope) = extract_method_markdown_scoped(html, "new").unwrap();
+        assert!(!empty);
+        assert_eq!(scope, "method");
+        assert!(
+            !md.contains("parent page noise"),
+            "must not dump full parent page: {md}"
+        );
+        assert!(
+            md.to_ascii_lowercase().contains("new") || md.contains("Creates a new runtime"),
+            "expected method content: {md}"
+        );
+        assert!(!md.contains('§'));
+        assert!(!md.contains("Copy item path"));
+    }
+
+    #[test]
+    fn scrub_rustdoc_chrome_strips_section_sign() {
+        let dirty = "## [§](#serde)Serde\nCopy item path\nbody";
+        let clean = scrub_rustdoc_chrome(dirty);
+        assert!(!clean.contains('§'));
+        assert!(!clean.contains("Copy item path"));
+        assert!(clean.contains("Serde"));
+    }
+
+    #[test]
+    fn method_missing_anchor_falls_back_item_page() {
+        let html = r#"<html><body><div id="main-content"><h1>Struct Runtime</h1><p>only parent</p></div></body></html>"#;
+        let (md, empty, scope) = extract_method_markdown_scoped(html, "new").unwrap();
+        assert_eq!(scope, "item_page");
+        assert!(!empty);
+        assert!(md.contains("Runtime") || md.contains("parent"));
     }
 }

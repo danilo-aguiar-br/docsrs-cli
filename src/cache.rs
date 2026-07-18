@@ -482,7 +482,10 @@ pub fn resolve_cache_dir_with_source(
         return (Some(PathBuf::from(p)), PathSource::CliOrEnv);
     }
     if let Some(h) = std::env::var_os("DOCSRS_CLI_HOME") {
-        return (Some(PathBuf::from(h).join("cache")), PathSource::HomeSandbox);
+        return (
+            Some(PathBuf::from(h).join("cache")),
+            PathSource::HomeSandbox,
+        );
     }
     if let Some(p) = directories::ProjectDirs::from("", "", crate::config::APP_NAME)
         .map(|d| d.cache_dir().to_path_buf())
@@ -637,8 +640,8 @@ mod tests {
                     final_url: url.clone(),
                     body: Bytes::from(body),
                     content_type: Some("text/html".into()),
-            cache_hit: false,
-        },
+                    cache_hit: false,
+                },
             )
             .unwrap();
         let reader = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 50);
@@ -750,8 +753,8 @@ mod tests {
                     final_url: u1.clone(),
                     body: Bytes::from(body1),
                     content_type: Some("text/html".into()),
-            cache_hit: false,
-        },
+                    cache_hit: false,
+                },
             )
             .unwrap();
         std::thread::sleep(Duration::from_millis(20));
@@ -764,8 +767,8 @@ mod tests {
                     final_url: u2.clone(),
                     body: Bytes::from(body2),
                     content_type: Some("text/html".into()),
-            cache_hit: false,
-        },
+                    cache_hit: false,
+                },
             )
             .unwrap();
         let stats = cache.stats();
@@ -791,8 +794,8 @@ mod tests {
                     final_url: url.clone(),
                     body: Bytes::from(body),
                     content_type: Some("text/html".into()),
-            cache_hit: false,
-        },
+                    cache_hit: false,
+                },
             )
             .unwrap();
         let stats = cache.stats();

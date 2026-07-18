@@ -22,7 +22,7 @@
     "schema_version": {
       "type": "integer",
       "const": 1,
-      "description": "Envelope/schema contract version (always 1 in 1.1.x)"
+      "description": "Envelope/schema contract version (always 1 in 0.1.x)"
     }
   }
 }

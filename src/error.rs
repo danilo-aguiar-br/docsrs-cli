@@ -20,6 +20,7 @@
 //! | not_found | 66 | no |
 //! | rate_limited / unavailable | 69 | yes |
 //! | network | 74 | yes |
+//! | budget | 74 | no |
 //! | timeout | 124 | yes |
 //! | parse | 65 | no |
 //! | config | 78 | no |
@@ -55,6 +56,11 @@ pub enum ErrorKind {
     Timeout,
     /// Transport / unexpected HTTP failure (exit 74, retryable).
     Network,
+    /// Local body/output budget exceeded (exit 74, **not** retryable).
+    ///
+    /// Permanent for the same config: raising `--max-body-bytes` (or lowering
+    /// the remote payload) is required — agents must not auto-retry.
+    Budget,
     /// Body parse failure (exit 65).
     Parse,
     /// Local configuration error (exit 78).
@@ -80,6 +86,7 @@ impl ErrorKind {
             Self::Unavailable => "unavailable",
             Self::Timeout => "timeout",
             Self::Network => "network",
+            Self::Budget => "budget",
             Self::Parse => "parse",
             Self::Config => "config",
             Self::Internal => "internal",
@@ -96,7 +103,7 @@ impl ErrorKind {
             Self::InvalidInput => 65,
             Self::NotFound => 66,
             Self::RateLimited | Self::Unavailable => 69,
-            Self::Network => 74,
+            Self::Network | Self::Budget => 74,
             Self::Timeout => 124,
             Self::Parse => 65,
             Self::Config => 78,
@@ -301,6 +308,10 @@ mod tests {
         assert_eq!(ErrorKind::NotFound.exit_code(), 66);
         assert_eq!(ErrorKind::RateLimited.exit_code(), 69);
         assert_eq!(ErrorKind::Network.exit_code(), 74);
+        assert_eq!(ErrorKind::Budget.exit_code(), 74);
+        assert_eq!(ErrorKind::Budget.as_str(), "budget");
+        assert!(!ErrorKind::Budget.retryable());
+        assert!(ErrorKind::Budget.is_permanent());
         assert_eq!(ErrorKind::Timeout.exit_code(), 124);
         assert_eq!(ErrorKind::Interrupted.exit_code(), 130);
         assert_eq!(ErrorKind::Terminated.exit_code(), 143);
@@ -373,7 +384,11 @@ mod tests {
     #[test]
     fn app_error_clone_shares_source() {
         use std::error::Error as _;
-        let e = AppError::with_source(ErrorKind::Network, "req failed", std::io::Error::other("eof"));
+        let e = AppError::with_source(
+            ErrorKind::Network,
+            "req failed",
+            std::io::Error::other("eof"),
+        );
         let c = e.clone();
         assert_eq!(c.kind(), ErrorKind::Network);
         assert_eq!(c.message(), "req failed");

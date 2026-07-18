@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli doctor success data",
   "type": "object",
-  "description": "Payload under envelope.data for command doctor. Outer envelope always has schema_version=1, ok, command, duration_ms. With --online, checks may include online_crates_io and online_docs_rs.",
+  "description": "Payload under envelope.data for command doctor. Outer envelope always has schema_version=1, ok, command, duration_ms. Outer envelope ok mirrors data.ok (may be false with process exit 78 when checks fail; still a success envelope, not an error envelope). With --online, checks may include online_crates_io and online_docs_rs.",
   "required": [
     "ok",
     "checks"

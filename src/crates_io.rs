@@ -79,6 +79,68 @@ pub struct SearchCratesData {
     pub cache_hit: bool,
 }
 
+/// Echo fields for `search-crates` taken from the **effective request URL**
+/// (single source of truth after URL planning, including `--page-token`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchEcho {
+    /// Query string (`q=`).
+    pub query: String,
+    /// 1-based page.
+    pub page: u32,
+    /// Page size.
+    pub per_page: u32,
+    /// Sort token.
+    pub sort: String,
+}
+
+impl SearchEcho {
+    /// Build from CLI-side fallbacks before URL planning.
+    pub fn from_cli(query: &str, page: u32, per_page: u32, sort: &str) -> Self {
+        let (per_page, page) = clamp_search_pagination(per_page, page);
+        Self {
+            query: query.to_string(),
+            page,
+            per_page,
+            sort: sort.to_string(),
+        }
+    }
+}
+
+/// Derive echo params from the planned URL query string.
+///
+/// Missing pairs fall back to `fallback` so pure `seek=` tokens and partial
+/// tokens still produce a coherent agent-facing payload.
+pub fn echo_params_from_url(url: &Url, fallback: &SearchEcho) -> SearchEcho {
+    let mut query = fallback.query.clone();
+    let mut page = fallback.page;
+    let mut per_page = fallback.per_page;
+    let mut sort = fallback.sort.clone();
+    for (k, v) in url.query_pairs() {
+        match k.as_ref() {
+            "q" => query = v.into_owned(),
+            "page" => {
+                if let Ok(n) = v.parse::<u32>() {
+                    page = n.max(1);
+                }
+            }
+            "per_page" => {
+                if let Ok(n) = v.parse::<u32>() {
+                    per_page = n.clamp(1, MAX_PER_PAGE);
+                }
+            }
+            "sort" => sort = v.into_owned(),
+            _ => {}
+        }
+    }
+    let (per_page, page) = clamp_search_pagination(per_page, page);
+    SearchEcho {
+        query,
+        page,
+        per_page,
+        sort,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
     crates: Vec<ApiCrate>,
@@ -160,7 +222,6 @@ pub fn planned_url_on_host(
     }
     Ok(url)
 }
-
 
 /// Build search URL using an opaque `next_page` / `prev_page` token from crates.io meta.
 ///
@@ -328,6 +389,9 @@ pub async fn search_crates_on_origin(
 
 /// Execute search against a pre-built URL (mock hosts in tests).
 ///
+/// Echo fields (`query`/`page`/`per_page`/`sort`) are taken from the **URL**
+/// via [`echo_params_from_url`], with CLI values as fallback for missing pairs.
+///
 /// # Errors
 ///
 /// Propagates HTTP transport errors from [`HttpClient::get_json`].
@@ -341,6 +405,8 @@ pub async fn search_crates_at(
     sort: &str,
     page: u32,
 ) -> AppResult<SearchCratesData> {
+    let fallback = SearchEcho::from_cli(query, page, per_page, sort);
+    let echo = echo_params_from_url(url, &fallback);
     let resp = http.get_json(url).await?;
     if resp.status.as_u16() == 404 {
         return Err(AppError::from_http_status(404, "crates.io search"));
@@ -359,7 +425,14 @@ pub async fn search_crates_at(
     }
 
     let text = decode_utf8(&resp.body)?;
-    parse_search_body(&text, query, page, per_page, sort, resp.cache_hit)
+    parse_search_body(
+        &text,
+        &echo.query,
+        echo.page,
+        echo.per_page,
+        &echo.sort,
+        resp.cache_hit,
+    )
 }
 
 #[cfg(test)]
@@ -429,5 +502,34 @@ mod tests {
     fn planned_url_on_host_http_base() {
         let u = planned_url_on_host("http://127.0.0.1:9", "q", 10, "new", 1).unwrap();
         assert!(u.as_str().starts_with("http://127.0.0.1:9/api/v1/crates"));
+    }
+
+    #[test]
+    fn echo_params_from_page_token_url() {
+        let fallback = SearchEcho::from_cli("", 1, 10, "relevance");
+        let url = planned_url_with_page_token(
+            "https://crates.io",
+            "",
+            10,
+            "relevance",
+            "?q=serde&per_page=2&sort=relevance&page=2",
+        )
+        .unwrap();
+        let echo = echo_params_from_url(&url, &fallback);
+        assert_eq!(echo.query, "serde");
+        assert_eq!(echo.page, 2);
+        assert_eq!(echo.per_page, 2);
+        assert_eq!(echo.sort, "relevance");
+    }
+
+    #[test]
+    fn echo_params_fallback_when_pairs_missing() {
+        let fallback = SearchEcho::from_cli("local", 3, 25, "downloads");
+        let url = Url::parse("https://crates.io/api/v1/crates?seek=ABC").unwrap();
+        let echo = echo_params_from_url(&url, &fallback);
+        assert_eq!(echo.query, "local");
+        assert_eq!(echo.page, 3);
+        assert_eq!(echo.per_page, 25);
+        assert_eq!(echo.sort, "downloads");
     }
 }

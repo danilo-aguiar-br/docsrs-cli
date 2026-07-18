@@ -31,6 +31,8 @@ docsrs-cli search-crates async --page 1 --per-page 20 --sort downloads --json
 docsrs-cli search-crates async --page 1 --per-page 20 --json
 # read data.meta.next_page into NEXT, then:
 docsrs-cli search-crates --page-token "$NEXT" --json
+# echoed query/page/per_page/sort match the effective URL (not stale argv)
+docsrs-cli --dry-run search-crates --page-token '?q=serde&per_page=2&page=2' --json
 ```
 
 ## How To Fetch a Crate Overview
@@ -72,7 +74,23 @@ docsrs-cli get-item async-trait attribute async_trait --json
 ```bash
 docsrs-cli get-item tokio method runtime::Runtime::new --json
 docsrs-cli get-item tokio fn runtime::Runtime::new --json
-# parent type page + #method.new; payload includes item_name and optional resolved_version
+# parent type page + #method.new; payload includes item_name, optional resolved_version
+# data.extraction is method when markdown is scoped to the method body
+```
+
+## How To Confirm Rustdoc Chrome Scrub
+- Problem: markdown must not carry rustdoc UI chrome into agent context
+```bash
+docsrs-cli readme serde --json
+# data.markdown has no § section markers and no "Copy item path" UI strings
+```
+
+## How To Pass Hyphenated item_path Segments
+- Problem: crates.io style names use hyphens but rustc paths use underscores
+```bash
+docsrs-cli --dry-run get-item async-trait attribute async-trait --json
+# planned URL uses async_trait; live get-item accepts hyphen input the same way
+docsrs-cli get-item async-trait attribute async-trait --json
 ```
 
 ## How To Suggest Nearby Symbols on 404
@@ -80,6 +98,24 @@ docsrs-cli get-item tokio fn runtime::Runtime::new --json
 ```bash
 docsrs-cli get-item serde struct Serde --suggest --json
 docsrs-cli get-item tokio struct RuntimeX --suggest --json
+# suggestions rank exact → prefix → substring → edit-distance (one all.html fetch)
+# typos like Parserx can surface Parser (trait) in the error message
+```
+
+## How To Handle Body Budget Without Retry Storms
+- Problem: a response exceeds `--max-body-bytes` and agents must not spin
+```bash
+docsrs-cli --max-body-bytes 50 readme serde --json
+# exit 74, error.kind=budget, error.retryable=false
+# raise --max-body-bytes (within hard ceiling) instead of retrying
+```
+
+## How To Fail Closed on Explicit Zero Timeouts
+- Problem: prove timeout 0 is rejected instead of hanging forever
+```bash
+docsrs-cli --timeout 0 version --json
+docsrs-cli --connect-timeout 0 doctor --json
+# both exit 65 invalid_input
 ```
 
 ## How To Search Symbols Inside One Crate
@@ -173,6 +209,7 @@ docsrs-cli doctor --online --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli config init --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --json
 DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --online --json
+# treat healthy only when process exit is 0 and both top-level ok and data.ok are true
 ```
 
 ## How To Cover Every Top-Level Command Once
@@ -191,4 +228,6 @@ docsrs-cli schema --cmd get-item --json
 docsrs-cli completions bash >/dev/null
 docsrs-cli cache stats --json
 docsrs-cli config path --json
+# optional human live smoke (not CI):
+# ./scripts/smoke-live.sh
 ```
