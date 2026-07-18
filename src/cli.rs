@@ -58,7 +58,7 @@ pub struct Cli {
     pub format: Option<OutputFormat>,
 
     /// Wall-clock timeout in seconds
-    #[arg(long, global = true, env = "DOCSRS_CLI_TIMEOUT_SECS")]
+    #[arg(long, global = true)]
     pub timeout: Option<u64>,
 
     /// Connect timeout in seconds
@@ -66,19 +66,19 @@ pub struct Cli {
     pub connect_timeout: Option<u64>,
 
     /// Override User-Agent
-    #[arg(long, global = true, env = "DOCSRS_CLI_USER_AGENT")]
+    #[arg(long, global = true)]
     pub user_agent: Option<String>,
 
     /// Force human stderr locale: en or pt-BR (fail-closed; JSON stays English)
-    #[arg(long, global = true, env = "DOCSRS_CLI_LANG")]
+    #[arg(long, global = true)]
     pub lang: Option<String>,
 
     /// Override XDG config directory
-    #[arg(long, global = true, env = "DOCSRS_CLI_CONFIG_DIR")]
+    #[arg(long, global = true)]
     pub config_dir: Option<PathBuf>,
 
     /// Override XDG cache directory for HTTP body cache
-    #[arg(long, global = true, env = "DOCSRS_CLI_CACHE_DIR")]
+    #[arg(long, global = true)]
     pub cache_dir: Option<PathBuf>,
 
     /// Disable disk cache (always hit network)
@@ -86,11 +86,11 @@ pub struct Cli {
     pub no_cache: bool,
 
     /// Disk cache TTL in seconds (default 86400 = 24h)
-    #[arg(long, global = true, env = "DOCSRS_CLI_CACHE_TTL_SECS")]
+    #[arg(long, global = true)]
     pub cache_ttl_secs: Option<u64>,
 
     /// Soft cap on disk cache size in bytes (default 268435456 = 256 MiB; 0 = unlimited)
-    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_CACHE_BYTES")]
+    #[arg(long, global = true)]
     pub max_cache_bytes: Option<u64>,
 
     /// Plan URLs without opening network sockets
@@ -98,11 +98,11 @@ pub struct Cli {
     pub dry_run: bool,
 
     /// Cap downloaded body size in bytes (hard max 10485760 = 10 MiB; cannot raise above)
-    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_BODY_BYTES")]
+    #[arg(long, global = true)]
     pub max_body_bytes: Option<u64>,
 
     /// Cap emitted payload size in bytes (hard max 2097152 = 2 MiB; cannot raise above)
-    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_OUTPUT_BYTES")]
+    #[arg(long, global = true)]
     pub max_output_bytes: Option<u64>,
 
     /// Minimum delay between requests to the same host (ms)
@@ -110,23 +110,23 @@ pub struct Cli {
     pub rate_limit_delay_ms: Option<u64>,
 
     /// Max concurrent CPU parse workers (`0` = auto from CPUs and free RAM)
-    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_CONCURRENCY")]
+    #[arg(long, global = true)]
     pub max_concurrency: Option<u32>,
 
     /// Max HTTP retries for transient errors (after the first attempt)
-    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_RETRIES")]
+    #[arg(long, global = true)]
     pub max_retries: Option<u32>,
 
     /// Base backoff delay in milliseconds for HTTP retries
-    #[arg(long, global = true, env = "DOCSRS_CLI_RETRY_BASE_MS")]
+    #[arg(long, global = true)]
     pub retry_base_ms: Option<u64>,
 
     /// Maximum single HTTP retry sleep in milliseconds
-    #[arg(long, global = true, env = "DOCSRS_CLI_RETRY_MAX_DELAY_MS")]
+    #[arg(long, global = true)]
     pub retry_max_delay_ms: Option<u64>,
 
     /// Disable HTTP retries (incident kill switch / debug)
-    #[arg(long, global = true, env = "DOCSRS_CLI_DISABLE_RETRY")]
+    #[arg(long, global = true)]
     pub disable_retry: bool,
 
     /// Increase stderr verbosity
@@ -162,7 +162,8 @@ pub enum OutputFormat {
 pub enum Commands {
     /// Search crates on crates.io
     SearchCrates {
-        /// Search keywords (English)
+        /// Search keywords (English). Optional when `--page-token` carries a full query string.
+        #[arg(default_value = "")]
         query: String,
         /// Results per page (max 100)
         #[arg(long, default_value_t = 10)]
@@ -170,9 +171,12 @@ pub enum Commands {
         /// Sort order
         #[arg(long, value_enum, default_value_t = SortKind::Relevance)]
         sort: SortKind,
-        /// Page number (1-based)
-        #[arg(long, default_value_t = 1)]
+        /// Page number (1-based). Conflicts with `--page-token`.
+        #[arg(long, default_value_t = 1, conflicts_with = "page_token")]
         page: u32,
+        /// Opaque pagination token from `meta.next_page` / `meta.prev_page` (full query or seek).
+        #[arg(long, conflicts_with = "page")]
+        page_token: Option<String>,
     },
     /// Fetch crate overview docblock from docs.rs (not git README)
     Readme {
@@ -186,35 +190,45 @@ pub enum Commands {
     GetItem {
         /// Crate name on crates.io or a stdlib crate.
         crate_name: String,
-        /// Kind: module|struct|trait|enum|union|fn|function|type|const|constant|static|macro|attr|attribute|derive
+        /// Kind: module|struct|trait|enum|union|fn|function|method|type|const|constant|static|macro|attr|attribute|derive
         item_type: String,
         /// Path with `::` or `/` (e.g. `tokio::runtime::Runtime`, `runtime/Runtime`, `async_trait`)
         item_path: String,
         /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
+        /// On 404, suggest nearby symbols from all.html (extra request).
+        #[arg(long)]
+        suggest: bool,
     },
     /// Search symbols in crate all.html index
     SearchInCrate {
         /// Crate name on crates.io or a stdlib crate.
         crate_name: String,
-        /// Substring filter; empty string lists all classified items
+        /// Text filter; empty string lists all classified items
         #[arg(default_value = "")]
         query: String,
         /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
-        /// Optional item-kind filter (`struct`, `fn`, …).
+        /// Optional item-kind filter (`struct`, `fn`, `method`, …).
         #[arg(long)]
         item_type: Option<String>,
-        /// Maximum hits to emit.
+        /// Maximum hits to emit (clamped to 1000).
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        /// Match policy: exact | prefix (default) | substring
+        #[arg(long, default_value = "prefix")]
+        r#match: String,
     },
     /// Print binary version
     Version,
     /// Validate local TLS/config readiness
-    Doctor,
+    Doctor {
+        /// Probe crates.io / docs.rs over the network (opt-in)
+        #[arg(long)]
+        online: bool,
+    },
     /// List the full command tree for agent discovery
     Commands,
     /// Emit JSON Schema for a command
@@ -475,11 +489,13 @@ mod tests {
                 per_page,
                 sort,
                 page,
+                page_token,
             } => {
                 assert_eq!(query, "serde");
                 assert_eq!(per_page, 10);
                 assert_eq!(sort, SortKind::Relevance);
                 assert_eq!(page, 1);
+                assert!(page_token.is_none());
             }
             _ => panic!("wrong command"),
         }

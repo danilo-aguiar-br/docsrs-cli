@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli dry-run success envelope fragment",
+  "type": "object",
+  "description": "When global --dry-run is set on a network command, success envelopes include dry_run=true and data with planned_url plus planned_params. planned_params always use crate_name (never crate).",
+  "required": [
+    "schema_version",
+    "ok",
+    "command",
+    "dry_run",
+    "data",
+    "duration_ms"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "command": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean",
+      "const": true
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "planned_url",
+        "planned_params"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "planned_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "planned_params": {
+          "type": "object",
+          "description": "Command-specific planned fields; crate fields use crate_name. search-in-crate planned limit is clamped to 1000 even if --limit is higher. Keys vary by command, so additionalProperties remains true only on this bag.",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

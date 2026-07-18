@@ -28,7 +28,7 @@ fn normalize_md(s: &str) -> String {
 #[test]
 fn golden_search_crates_json_and_markdown() {
     let body = include_str!("fixtures/crates_io/search_serde.json");
-    let data = parse_search_body(body, "serde", 1, 10, "relevance").unwrap();
+    let data = parse_search_body(body, "serde", 1, 10, "relevance", false).unwrap();
     let got = serde_json::to_value(&data).unwrap();
     let want: serde_json::Value =
         serde_json::from_str(include_str!("golden/json/search-crates.json")).unwrap();
@@ -52,7 +52,8 @@ fn golden_readme_markdown_from_fixture() {
         empty: false,
         truncated: false,
         source_url: "https://docs.rs/demo/latest/demo/index.html".into(),
-    };
+            cache_hit: false,
+        };
     let md = render_readme_markdown(&data);
     // Assert stable header + key content; body converter may add fences.
     assert!(md.starts_with("# demo Documentation\n"));
@@ -73,6 +74,7 @@ fn golden_get_item_markdown_structure() {
         crate_name: "tokio".into(),
         item_type: "struct".into(),
         item_path: "tokio::runtime::Runtime".into(),
+        item_name: "Runtime".into(),
         version: "latest".into(),
         resolved_version: None,
         markdown: "The Tokio runtime.".into(),
@@ -80,7 +82,8 @@ fn golden_get_item_markdown_structure() {
         truncated: false,
         source_url: "https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html".into(),
         title: "tokio::runtime::Runtime (struct)".into(),
-    };
+            cache_hit: false,
+        };
     // Prefer stable synthetic body for exact golden match.
     let md = render_item_markdown(&data);
     let golden = include_str!("golden/markdown/get-item.md");
@@ -98,7 +101,9 @@ fn golden_search_in_crate_markdown() {
         "Client",
         Some(ItemKind::Struct),
         10,
+        docsrs_cli::domain::MatchMode::Prefix,
         "https://docs.rs/demo/1.0.0/demo/all.html",
+        false,
     )
     .unwrap();
     let md = render_search_in_crate_markdown(&data);

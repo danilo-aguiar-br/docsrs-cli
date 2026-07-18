@@ -84,7 +84,7 @@ impl ItemKind {
             "trait" => Ok(Self::Trait),
             "enum" => Ok(Self::Enum),
             "union" => Ok(Self::Union),
-            "fn" | "function" => Ok(Self::Fn),
+            "fn" | "function" | "method" => Ok(Self::Fn),
             "type" => Ok(Self::Type),
             "const" | "constant" => Ok(Self::Constant),
             "static" => Ok(Self::Static),
@@ -118,7 +118,16 @@ impl ItemKind {
             "union" => Some(Self::Union),
             "attr" => Some(Self::Attribute),
             "derive" => Some(Self::Derive),
-            _ => None,
+            // Module pages use index.html (no typed prefix).
+            "index" => Some(Self::Module),
+            _ => {
+                // Associated method anchors: `struct.Foo.html#method.bar`
+                if href.contains("#method.") {
+                    Some(Self::Fn)
+                } else {
+                    None
+                }
+            }
         }
     }
 }

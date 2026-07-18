@@ -1,10 +1,9 @@
 [English](SECURITY.md)
 
 # Política de Segurança
-
-
 ## Versões Suportadas
-- `0.1.x` recebe correções de segurança
+- `1.1.x` recebe correções de segurança
+- `0.1.x` é histórico e não recebe novas correções de segurança
 - Experimentos pré-release fora de tags não são suportados
 
 
@@ -48,11 +47,12 @@
 - O produto não armazena API keys
 - Cache em disco guarda apenas bodies HTTP públicos
 - Modos privados Unix preferem dirs `0o700` e arquivos `0o600` nas escritas da CLI
+- Knobs de produto vêm só de flags CLI e XDG `config.toml`, nunca de env `DOCSRS_CLI_*` de produto
 
 
 ## Hall of Fame
 - Pesquisadores de segurança que reportarem issues válidas podem ser listados aqui após o fix
-- Ainda sem entradas para 0.1.0
+- Ainda sem entradas para 1.1.0
 
 
 ## Boas Práticas para Usuários
@@ -60,4 +60,5 @@
 - Mantenha o binário atualizado na linha minor suportada
 - Não passe segredos em argv quando stdin ou env estiver disponível
 - Rode `docsrs-cli doctor --json` após mudar paths de config
+- Rode `docsrs-cli doctor --online --json` quando precisar de probes DNS para crates.io e docs.rs
 - Trate o conteúdo do cache como snapshots públicos de documentação, não como segredos

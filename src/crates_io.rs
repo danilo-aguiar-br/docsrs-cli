@@ -75,6 +75,8 @@ pub struct SearchCratesData {
     pub hits: Vec<CrateSearchHit>,
     /// Pagination metadata from crates.io.
     pub meta: SearchMeta,
+    /// True when the HTTP body was served from the local disk cache.
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +161,68 @@ pub fn planned_url_on_host(
     Ok(url)
 }
 
+
+/// Build search URL using an opaque `next_page` / `prev_page` token from crates.io meta.
+///
+/// Accepts:
+/// - full query string (`?q=…&page=2` or `q=…&page=2`)
+/// - pure page number string
+/// - `seek=…` tokens
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Internal`] when the base URL is invalid.
+/// Returns [`ErrorKind::InvalidInput`] when the token cannot form a valid URL.
+pub fn planned_url_with_page_token(
+    host: &str,
+    query: &str,
+    per_page: u32,
+    sort: &str,
+    page_token: &str,
+) -> AppResult<Url> {
+    let token = page_token.trim();
+    if token.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::InvalidInput,
+            "page token is empty",
+        ));
+    }
+    // Pure numeric → page number
+    if let Ok(page) = token.parse::<u32>() {
+        return planned_url_on_host(host, query, per_page, sort, page);
+    }
+    let scheme = if host.starts_with("http://") || host.starts_with("https://") {
+        ""
+    } else {
+        "https://"
+    };
+    let base = if scheme.is_empty() {
+        format!("{host}/api/v1/crates")
+    } else {
+        format!("{scheme}{host}/api/v1/crates")
+    };
+    let base_url = Url::parse(&base)
+        .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid crates.io base URL", e))?;
+
+    let qs = token.trim_start_matches('?');
+    // If token already carries a full query, use it as the request query.
+    if qs.contains('=') {
+        let mut url = base_url;
+        url.set_query(Some(qs));
+        return Ok(url);
+    }
+    // Opaque seek-like token
+    let (per_page, _) = clamp_search_pagination(per_page, 1);
+    let mut url = base_url;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("q", query);
+        q.append_pair("per_page", &per_page.to_string());
+        q.append_pair("sort", sort);
+        q.append_pair("seek", qs);
+    }
+    Ok(url)
+}
 /// Parse crates.io JSON body into product types (offline-testable).
 ///
 /// # Errors
@@ -170,6 +234,7 @@ pub fn parse_search_body(
     page: u32,
     per_page: u32,
     sort: &str,
+    cache_hit: bool,
 ) -> AppResult<SearchCratesData> {
     let (per_page, page) = clamp_search_pagination(per_page, page);
     let parsed: ApiResponse = serde_json::from_str(text).map_err(|e| {
@@ -214,6 +279,7 @@ pub fn parse_search_body(
             next_page: parsed.meta.next_page,
             prev_page: parsed.meta.prev_page,
         },
+        cache_hit,
     })
 }
 
@@ -293,7 +359,7 @@ pub async fn search_crates_at(
     }
 
     let text = decode_utf8(&resp.body)?;
-    parse_search_body(&text, query, page, per_page, sort)
+    parse_search_body(&text, query, page, per_page, sort, resp.cache_hit)
 }
 
 #[cfg(test)]
@@ -323,7 +389,7 @@ mod tests {
     #[test]
     fn parse_fixture_serde() {
         let body = include_str!("../tests/fixtures/crates_io/search_serde.json");
-        let data = parse_search_body(body, "serde", 1, 10, "relevance").unwrap();
+        let data = parse_search_body(body, "serde", 1, 10, "relevance", false).unwrap();
         assert_eq!(data.hits.len(), 2);
         assert_eq!(data.hits[0].name, "serde");
         assert_eq!(data.hits[0].exact_match, Some(true));
@@ -336,7 +402,7 @@ mod tests {
     #[test]
     fn parse_fixture_seek_meta() {
         let body = include_str!("../tests/fixtures/crates_io/search_seek_meta.json");
-        let data = parse_search_body(body, "example", 1, 10, "downloads").unwrap();
+        let data = parse_search_body(body, "example", 1, 10, "downloads", false).unwrap();
         assert_eq!(
             data.meta.next_page.as_deref(),
             Some("seek=ABC123&per_page=10")
@@ -347,14 +413,14 @@ mod tests {
 
     #[test]
     fn parse_invalid_json() {
-        let err = parse_search_body("{", "q", 1, 10, "relevance").unwrap_err();
+        let err = parse_search_body("{", "q", 1, 10, "relevance", false).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Parse);
     }
 
     #[test]
     fn parse_missing_versions_uses_unknown() {
         let body = r#"{"crates":[{"name":"x","downloads":1}],"meta":{"total":1}}"#;
-        let data = parse_search_body(body, "x", 1, 10, "new").unwrap();
+        let data = parse_search_body(body, "x", 1, 10, "new", false).unwrap();
         assert_eq!(data.hits[0].version, "unknown");
         assert!(data.meta.next_page.is_none());
     }

@@ -17,7 +17,7 @@ fn version_json() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["name"], "docsrs-cli");
-    assert_eq!(v["data"]["version"], "0.1.0");
+    assert_eq!(v["data"]["version"], "1.1.0");
     assert_eq!(v["data"]["msrv"], "1.88.0");
     assert!(v.get("schema_version").is_some());
     assert!(v.get("duration_ms").is_some());
@@ -33,7 +33,7 @@ fn version_text() {
         .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("docsrs-cli 0.1.0"));
+    assert!(s.contains("docsrs-cli 1.1.0"));
 }
 
 #[test]

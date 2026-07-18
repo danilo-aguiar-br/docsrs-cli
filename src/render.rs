@@ -362,6 +362,7 @@ mod tests {
                 next_page: None,
                 prev_page: None,
             },
+            cache_hit: false,
         };
         let md = render_search_markdown(&data);
         assert!(md.contains("No crates found"));
@@ -377,12 +378,14 @@ mod tests {
             empty: true,
             truncated: false,
             source_url: "u".into(),
+            cache_hit: false,
         };
         assert!(render_readme_markdown(&r).contains("No documentation"));
         let i = GetItemData {
             crate_name: "c".into(),
             item_type: "fn".into(),
             item_path: "c::f".into(),
+            item_name: "f".into(),
             version: "latest".into(),
             resolved_version: None,
             markdown: String::new(),
@@ -390,6 +393,7 @@ mod tests {
             truncated: false,
             source_url: "u".into(),
             title: "c::f (fn)".into(),
+            cache_hit: false,
         };
         assert!(render_item_markdown(&i).contains("No documentation"));
     }
@@ -450,6 +454,7 @@ mod tests {
             empty: false,
             truncated: false,
             source_url: "https://example.com".into(),
+            cache_hit: false,
         };
         let r = serde_json::to_value(&readme).expect("serialize readme");
         assert!(r.get("resolved_version").is_none());
@@ -475,7 +480,8 @@ mod tests {
                 empty: false,
                 truncated: false,
                 source_url: "u".into(),
-            },
+            cache_hit: false,
+        },
             &cfg,
         );
         assert!(r.truncated);
@@ -485,6 +491,7 @@ mod tests {
                 crate_name: "c".into(),
                 item_type: "fn".into(),
                 item_path: "c::f".into(),
+                item_name: "f".into(),
                 version: "1".into(),
                 resolved_version: None,
                 markdown: "abcdef".into(),
@@ -492,7 +499,8 @@ mod tests {
                 truncated: false,
                 source_url: "u".into(),
                 title: "t".into(),
-            },
+            cache_hit: false,
+        },
             &cfg,
         );
         assert!(i.truncated);
@@ -517,11 +525,14 @@ mod tests {
             crate_name: "c".into(),
             query: String::new(),
             version: "1".into(),
+            item_type: None,
+            match_mode: "prefix".into(),
             total: 0,
             emitted: 0,
             hits: vec![],
             truncated: false,
             source_url: "u".into(),
+            cache_hit: false,
         };
         let md = render_search_in_crate_markdown(&data);
         assert!(md.contains("all items"));

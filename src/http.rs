@@ -34,7 +34,7 @@
 //!
 //! Policy lives in [`crate::retry::RetryConfig`] (not inline magic). GET-only
 //! product surface ⇒ idempotent retries for 429/5xx/transport only. Kill switch
-//! `--disable-retry` / `DOCSRS_CLI_DISABLE_RETRY`. See module docs on `retry`.
+//! `--disable-retry` / TOML `disable_retry` / `max_retries=0`. See module docs on `retry`.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -91,6 +91,8 @@ pub struct HttpResponse {
     pub body: Bytes,
     /// Content-Type header when present.
     pub content_type: Option<String>,
+    /// True when this response was served from the local disk cache (GAP-020).
+    pub cache_hit: bool,
 }
 
 impl HttpClient {
@@ -320,6 +322,7 @@ impl HttpClient {
                         final_url,
                         body,
                         content_type,
+                        cache_hit: false,
                     };
                     if method == Method::GET
                         && out.status.is_success()

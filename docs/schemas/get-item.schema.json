@@ -7,27 +7,55 @@
     "crate_name",
     "item_type",
     "item_path",
+    "item_name",
     "version",
     "markdown",
     "empty",
     "truncated",
     "source_url",
-    "title"
+    "title",
+    "cache_hit"
   ],
   "properties": {
-    "crate_name": { "type": "string" },
-    "item_type": { "type": "string" },
-    "item_path": { "type": "string" },
-    "version": { "type": "string" },
+    "crate_name": {
+      "type": "string"
+    },
+    "item_type": {
+      "type": "string"
+    },
+    "item_path": {
+      "type": "string"
+    },
+    "item_name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
     "resolved_version": {
       "type": "string",
       "description": "Omitted when docs.rs did not resolve a concrete version (never JSON null)"
     },
-    "markdown": { "type": "string" },
-    "empty": { "type": "boolean" },
-    "truncated": { "type": "boolean" },
-    "source_url": { "type": "string", "format": "uri" },
-    "title": { "type": "string" }
+    "markdown": {
+      "type": "string"
+    },
+    "empty": {
+      "type": "boolean"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "title": {
+      "type": "string"
+    },
+    "cache_hit": {
+      "type": "boolean",
+      "description": "True when the HTTP response body was served from the local disk cache"
+    }
   },
   "additionalProperties": false
 }

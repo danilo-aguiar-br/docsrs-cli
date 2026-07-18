@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli config command success data",
-  "type": "object",
-  "description": "Payload under envelope.data for config path|show|init. Outer envelope always has schema_version=1, ok, command, duration_ms. command is config-path, config-show, or config-init.",
+  "description": "Payload under envelope.data for config path|show|init. Outer envelope always has schema_version=1, ok, command, duration_ms. command is config-path, config-show, or config-init. Product knobs come from flags and XDG TOML only.",
   "oneOf": [
     {
       "title": "config-path",
@@ -15,77 +14,203 @@
         "dotenv_runtime",
         "secrets_layers"
       ],
+      "additionalProperties": false,
       "properties": {
-        "config_dir": { "type": ["string", "null"] },
+        "config_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config_source": {
           "type": "string",
-          "enum": ["cli-or-env", "home-sandbox", "xdg", "unresolved"]
+          "enum": [
+            "cli-or-env",
+            "home-sandbox",
+            "xdg",
+            "unresolved"
+          ]
         },
-        "config_file": { "type": ["string", "null"] },
-        "config_file_exists": { "type": "boolean" },
-        "config_toml_loaded": { "type": "boolean" },
-        "cache_dir": { "type": ["string", "null"] },
+        "config_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config_file_exists": {
+          "type": "boolean"
+        },
+        "config_toml_loaded": {
+          "type": "boolean"
+        },
+        "cache_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "cache_source": {
           "type": "string",
-          "enum": ["cli-or-env", "home-sandbox", "xdg", "unresolved"]
+          "enum": [
+            "cli-or-env",
+            "home-sandbox",
+            "xdg",
+            "unresolved"
+          ]
         },
-        "dotenv_runtime": { "type": "boolean", "const": false },
-        "secrets_layers": { "type": "string" }
+        "dotenv_runtime": {
+          "type": "boolean",
+          "const": false
+        },
+        "secrets_layers": {
+          "type": "string"
+        }
       }
     },
     {
       "title": "config-show",
       "type": "object",
-      "description": "Effective Config after defaults + TOML + env + CLI. Product has no secret fields.",
+      "description": "Effective Config after defaults + TOML + CLI. Product has no secret fields. Path sandbox may still use DOCSRS_CLI_HOME / *_DIR.",
       "required": [
         "timeout_secs",
         "config_path_source",
         "cache_path_source",
         "config_toml_loaded"
       ],
+      "additionalProperties": false,
       "properties": {
-        "timeout_secs": { "type": "integer" },
-        "connect_timeout_secs": { "type": "integer" },
-        "max_body_bytes": { "type": "integer" },
-        "max_output_bytes": { "type": "integer" },
-        "max_redirects": { "type": "integer" },
-        "max_retries": { "type": "integer" },
-        "retry_base_ms": { "type": "integer" },
-        "rate_limit_delay_ms": { "type": "integer" },
-        "user_agent": { "type": "string" },
-        "contact": { "type": ["string", "null"] },
-        "lang": { "type": ["string", "null"] },
-        "config_dir": { "type": ["string", "null"] },
-        "cache_dir": { "type": ["string", "null"] },
-        "cache_ttl_secs": { "type": "integer" },
-        "max_cache_bytes": { "type": "integer" },
-        "no_cache": { "type": "boolean" },
-        "crates_io_origin": { "type": "string" },
-        "docs_rs_origin": { "type": "string" },
+        "timeout_secs": {
+          "type": "integer"
+        },
+        "connect_timeout_secs": {
+          "type": "integer"
+        },
+        "max_body_bytes": {
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "type": "integer"
+        },
+        "max_redirects": {
+          "type": "integer"
+        },
+        "max_retries": {
+          "type": "integer"
+        },
+        "retry_base_ms": {
+          "type": "integer"
+        },
+        "retry_max_delay_ms": {
+          "type": "integer"
+        },
+        "disable_retry": {
+          "type": "boolean"
+        },
+        "rate_limit_delay_ms": {
+          "type": "integer"
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "contact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_ttl_secs": {
+          "type": "integer"
+        },
+        "max_cache_bytes": {
+          "type": "integer"
+        },
+        "no_cache": {
+          "type": "boolean"
+        },
+        "crates_io_origin": {
+          "type": "string"
+        },
+        "docs_rs_origin": {
+          "type": "string"
+        },
         "config_path_source": {
           "type": "string",
-          "enum": ["cli-or-env", "home-sandbox", "xdg", "unresolved"]
+          "enum": [
+            "cli-or-env",
+            "home-sandbox",
+            "xdg",
+            "unresolved"
+          ]
         },
         "cache_path_source": {
           "type": "string",
-          "enum": ["cli-or-env", "home-sandbox", "xdg", "unresolved"]
+          "enum": [
+            "cli-or-env",
+            "home-sandbox",
+            "xdg",
+            "unresolved"
+          ]
         },
-        "config_toml_loaded": { "type": "boolean" }
+        "config_toml_loaded": {
+          "type": "boolean"
+        }
       }
     },
     {
       "title": "config-init",
       "type": "object",
-      "required": ["path", "config_dir", "source", "created", "overwritten"],
+      "required": [
+        "path",
+        "config_dir",
+        "source",
+        "created",
+        "overwritten"
+      ],
+      "additionalProperties": false,
       "properties": {
-        "path": { "type": "string" },
-        "config_dir": { "type": "string" },
+        "path": {
+          "type": "string"
+        },
+        "config_dir": {
+          "type": "string"
+        },
         "source": {
           "type": "string",
-          "enum": ["cli-or-env", "home-sandbox", "xdg", "unresolved"]
+          "enum": [
+            "cli-or-env",
+            "home-sandbox",
+            "xdg",
+            "unresolved"
+          ]
         },
-        "created": { "type": "boolean" },
-        "overwritten": { "type": "boolean" }
+        "created": {
+          "type": "boolean"
+        },
+        "overwritten": {
+          "type": "boolean"
+        }
       }
     }
   ]

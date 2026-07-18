@@ -7,34 +7,84 @@
     "crate_name",
     "query",
     "version",
+    "match_mode",
     "total",
     "emitted",
     "hits",
     "truncated",
-    "source_url"
+    "source_url",
+    "cache_hit"
   ],
   "properties": {
-    "crate_name": { "type": "string" },
-    "query": { "type": "string" },
-    "version": { "type": "string" },
-    "total": { "type": "integer", "minimum": 0 },
-    "emitted": { "type": "integer", "minimum": 0 },
+    "crate_name": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "item_type": {
+      "type": "string"
+    },
+    "match_mode": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "prefix",
+        "substring"
+      ],
+      "description": "Echo of --match policy (default prefix)"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "emitted": {
+      "type": "integer",
+      "minimum": 0
+    },
     "hits": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "kind", "url"],
+        "required": [
+          "name",
+          "kind",
+          "url"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "kind": { "type": "string" },
-          "url": { "type": "string", "format": "uri" }
-        }
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       }
     },
     "truncated": {
       "type": "boolean",
       "description": "True when total > emitted because --limit cut the hit list"
     },
-    "source_url": { "type": "string", "format": "uri" }
-  }
+    "source_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "cache_hit": {
+      "type": "boolean",
+      "description": "True when the HTTP response body was served from the local disk cache"
+    }
+  },
+  "additionalProperties": false
 }

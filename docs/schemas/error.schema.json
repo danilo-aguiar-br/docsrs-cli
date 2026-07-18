@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli JSON error envelope",
+  "type": "object",
+  "description": "Top-level JSON written on failure when JSON output is selected. Not nested under data.",
+  "required": ["schema_version", "ok", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "ok": {
+      "type": "boolean",
+      "const": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "kind", "message", "retryable"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Process exit code"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Stable snake_case ErrorKind discriminant"
+        },
+        "message": {
+          "type": "string",
+          "description": "Technical English message (never secrets)"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "retry_after_secs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Omitted when absent; never JSON null"
+        }
+      }
+    }
+  }
+}

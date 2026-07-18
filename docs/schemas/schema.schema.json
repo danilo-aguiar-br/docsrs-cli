@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli schema success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command schema. Outer envelope always has schema_version=1, ok, command, duration_ms. The embedded document is a JSON Schema for another command's success data.",
+  "required": [
+    "command",
+    "schema",
+    "schema_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "type": "string",
+      "description": "Value of --cmd that was requested"
+    },
+    "schema": {
+      "type": "object",
+      "description": "Embedded JSON Schema document for the requested command success data. additionalProperties is true because the document is itself a free-form JSON Schema.",
+      "additionalProperties": true
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Envelope/schema contract version (always 1 in 1.1.x)"
+    }
+  }
+}

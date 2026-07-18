@@ -1,10 +1,9 @@
 [Português (pt-BR)](SECURITY.pt-BR.md)
 
 # Security Policy
-
-
 ## Supported Versions
-- `0.1.x` receives security fixes
+- `1.1.x` receives security fixes
+- `0.1.x` is historical and does not receive new security fixes
 - Pre-release experiments outside tagged releases are unsupported
 
 
@@ -48,11 +47,12 @@
 - No API keys are stored by the product
 - Disk cache holds public HTTP bodies only
 - Unix private modes prefer `0o700` dirs and `0o600` files for CLI writes
+- Product knobs come from CLI flags and XDG `config.toml` only, never from product `DOCSRS_CLI_*` env vars
 
 
 ## Hall of Fame
 - Security researchers who report valid issues may be listed here after fixes ship
-- No entries yet for 0.1.0
+- No entries yet for 1.1.0
 
 
 ## Best Practices for Users
@@ -60,4 +60,5 @@
 - Keep the binary updated on the supported minor line
 - Do not pass secrets on argv when stdin or env is available
 - Run `docsrs-cli doctor --json` after changing config paths
+- Run `docsrs-cli doctor --online --json` when you need DNS probes for crates.io and docs.rs
 - Treat cache contents as public documentation snapshots, not secrets

@@ -3,42 +3,86 @@
   "title": "docsrs-cli commands success data",
   "type": "object",
   "description": "Payload under envelope.data for command `commands`. Outer envelope always has schema_version=1, ok, command, duration_ms.",
-  "required": ["name", "version", "msrv", "schema_version", "commands"],
+  "required": [
+    "name",
+    "version",
+    "msrv",
+    "schema_version",
+    "commands"
+  ],
+  "additionalProperties": false,
   "properties": {
-    "name": { "type": "string", "const": "docsrs-cli" },
-    "version": { "type": "string" },
-    "msrv": { "type": "string" },
-    "schema_version": { "type": "integer", "const": 1 },
+    "name": {
+      "type": "string",
+      "const": "docsrs-cli"
+    },
+    "version": {
+      "type": "string"
+    },
+    "msrv": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
     "agent_notes": {
       "type": "object",
       "description": "Stable hints for LLM callers about streams and lifecycle",
+      "additionalProperties": false,
       "properties": {
-        "stdout": { "type": "string" },
-        "stderr": { "type": "string" },
-        "json_auto": { "type": "string" },
-        "lifecycle": { "type": "string" }
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "json_auto": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "type": "string"
+        }
       }
     },
     "commands": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "about"],
+        "required": [
+          "name",
+          "about"
+        ],
+        "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "about": { "type": "string" },
+          "name": {
+            "type": "string"
+          },
+          "about": {
+            "type": "string"
+          },
           "args": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "subcommands": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["name", "about"],
+              "required": [
+                "name",
+                "about"
+              ],
+              "additionalProperties": false,
               "properties": {
-                "name": { "type": "string" },
-                "about": { "type": "string" }
+                "name": {
+                  "type": "string"
+                },
+                "about": {
+                  "type": "string"
+                }
               }
             }
           }

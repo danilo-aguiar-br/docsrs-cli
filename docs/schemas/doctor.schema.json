@@ -2,19 +2,37 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli doctor success data",
   "type": "object",
-  "description": "Payload under envelope.data for command doctor. Outer envelope always has schema_version=1, ok, command, duration_ms.",
-  "required": ["ok", "checks"],
+  "description": "Payload under envelope.data for command doctor. Outer envelope always has schema_version=1, ok, command, duration_ms. With --online, checks may include online_crates_io and online_docs_rs.",
+  "required": [
+    "ok",
+    "checks"
+  ],
+  "additionalProperties": false,
   "properties": {
-    "ok": { "type": "boolean" },
+    "ok": {
+      "type": "boolean"
+    },
     "checks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "ok", "detail"],
+        "required": [
+          "name",
+          "ok",
+          "detail"
+        ],
+        "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "ok": { "type": "boolean" },
-          "detail": { "type": "string" }
+          "name": {
+            "type": "string",
+            "description": "Stable check id such as tls, config_dir, cache_dir, concurrency, retry_policy, user_agent_contact, online_crates_io, online_docs_rs"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
         }
       }
     }

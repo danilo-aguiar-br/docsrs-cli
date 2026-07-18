@@ -7,8 +7,7 @@
 //! - **Operations:** product surface is **GET-only** (idempotent by HTTP
 //!   semantics). No POST/PUT/DELETE; no Idempotency-Key required.
 //! - **Default:** retries **on** for transient failures (agent reliability).
-//!   Kill switch: `--disable-retry` / `DOCSRS_CLI_DISABLE_RETRY=1` / TOML
-//!   `disable_retry = true` / `max_retries = 0`.
+//!   Kill switch: `--disable-retry` / TOML `disable_retry = true` / `max_retries = 0`.
 //! - **Layer:** single retry loop inside [`crate::http::HttpClient`] only —
 //!   no middleware stack, no nested client retries, no agent-level auto-retry
 //!   of permanent kinds.

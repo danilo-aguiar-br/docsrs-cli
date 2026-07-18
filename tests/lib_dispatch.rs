@@ -41,7 +41,7 @@ async fn version_json_via_lib() {
 async fn version_text_via_lib() {
     let (code, out, _) = run_args(&["version"]).await;
     assert_code(code, 0);
-    assert!(out.contains("docsrs-cli 0.1.0"));
+    assert!(out.contains("docsrs-cli 1.1.0"));
 }
 
 #[tokio::test]
@@ -209,7 +209,7 @@ async fn format_markdown_overrides_auto_json() {
     .await;
     assert_code(code, 0);
     let s = String::from_utf8_lossy(&out);
-    assert!(s.contains("docsrs-cli 0.1.0"));
+    assert!(s.contains("docsrs-cli 1.1.0"));
     assert!(!s.trim_start().starts_with('{'));
 }
 

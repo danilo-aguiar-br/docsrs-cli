@@ -21,7 +21,7 @@
 //!
 //! Product GETs use [`retry::RetryConfig`]: exponential full-jitter backoff,
 //! `Retry-After` delta-seconds on 429/503, no retry on permanent 4xx/parse.
-//! Kill switch: `--disable-retry` / `DOCSRS_CLI_DISABLE_RETRY`. Policy is
+//! Kill switch: `--disable-retry` / TOML `disable_retry` / `max_retries=0`. Policy is
 //! single-layer inside [`http::HttpClient`] only.
 //!
 //! # Features
@@ -382,10 +382,14 @@ async fn dispatch<Out: Write, ErrW: Write>(
             }
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Doctor => doctor(cfg, wants_json, start, locale, stdout),
+        Commands::Doctor { online } => doctor(cfg, *online, wants_json, start, locale, stdout),
         Commands::Commands => commands_cmd(wants_json, start, stdout),
         Commands::Schema { cmd } => schema_cmd(cmd, wants_json, cli.format, start, stdout),
-        Commands::Completions { shell } => completions_cmd(*shell, wants_json, start, stdout),
+        Commands::Completions { shell } => {
+            // Completions emit shell script by default (even on non-TTY). JSON only if --json/--format json.
+            let explicit_json = cli.json || matches!(cli.format, Some(crate::cli::OutputFormat::Json));
+            completions_cmd(*shell, explicit_json, start, stdout)
+        }
         Commands::Cache { action } => cache_cmd(cfg, action, wants_json, start, stdout),
         Commands::Config { action } => config_cmd(cli, cfg, action, wants_json, start, stdout),
         Commands::SearchCrates {
@@ -393,18 +397,33 @@ async fn dispatch<Out: Write, ErrW: Write>(
             per_page,
             sort,
             page,
+            page_token,
         } => {
-            let query = SearchQuery::parse(query, false)?;
+            // Full `meta.next_page` tokens already embed `q=…`; allow empty positional query then.
+            let token_carries_query = page_token.as_deref().is_some_and(|t| {
+                let qs = t.trim().trim_start_matches('?');
+                qs.contains('=')
+            });
+            let query = SearchQuery::parse(query, token_carries_query)?;
             let sort_s = sort.as_api_str();
-            // Clamp once so dry-run planned_params matches the URL and live request.
             let (per_page, page) = crates_io::clamp_search_pagination(*per_page, *page);
-            let url = crates_io::planned_url_on_host(
-                &cfg.crates_io_origin,
-                query.as_str(),
-                per_page,
-                sort_s,
-                page,
-            )?;
+            let url = if let Some(token) = page_token.as_deref() {
+                crates_io::planned_url_with_page_token(
+                    &cfg.crates_io_origin,
+                    query.as_str(),
+                    per_page,
+                    sort_s,
+                    token,
+                )?
+            } else {
+                crates_io::planned_url_on_host(
+                    &cfg.crates_io_origin,
+                    query.as_str(),
+                    per_page,
+                    sort_s,
+                    page,
+                )?
+            };
             if dry_run {
                 return emit_dry_run(
                     "search-crates",
@@ -414,6 +433,7 @@ async fn dispatch<Out: Write, ErrW: Write>(
                         per_page,
                         sort: sort_s,
                         page,
+                        page_token: page_token.as_deref(),
                     },
                     wants_json,
                     start,
@@ -426,15 +446,9 @@ async fn dispatch<Out: Write, ErrW: Write>(
                 locale.progress_fetching("crates.io"),
             );
             let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data = crates_io::search_crates_on_origin(
-                &http,
-                &cfg.crates_io_origin,
-                query.as_str(),
-                per_page,
-                sort_s,
-                page,
-            )
-            .await;
+            let data =
+                crates_io::search_crates_at(&http, &url, query.as_str(), per_page, sort_s, page)
+                    .await;
             progress.finish();
             let data = data?;
             if wants_json {
@@ -506,6 +520,7 @@ async fn dispatch<Out: Write, ErrW: Write>(
             item_type,
             item_path,
             crate_version,
+            suggest,
         } => {
             let crate_name = CrateName::parse(crate_name)?;
             let kind = ItemKind::parse(item_type)?;
@@ -564,7 +579,47 @@ async fn dispatch<Out: Write, ErrW: Write>(
             )
             .await;
             progress.finish();
-            let data = apply_truncation_to_item(data?, cfg);
+            let data = match data {
+                Ok(d) => apply_truncation_to_item(d, cfg),
+                Err(e) if *suggest && e.kind() == ErrorKind::NotFound => {
+                    // Opt-in recovery: list nearby symbols from all.html
+                    let all_url = docs_rs::all_html_url_on_origin(
+                        &origin,
+                        crate_name.as_str(),
+                        version.as_str(),
+                    )?;
+                    let leaf = segs.last().map(|s| s.as_str()).unwrap_or(item_path.as_str());
+                    if let Ok(sugg) = docs_rs::search_in_crate_at(
+                        &http,
+                        crate_name.as_str(),
+                        version.as_str(),
+                        leaf,
+                        None,
+                        5,
+                        crate::domain::MatchMode::Prefix,
+                        &all_url,
+                    )
+                    .await
+                    {
+                        let names: Vec<String> =
+                            sugg.hits.into_iter().map(|h| format!("{} ({})", h.name, h.kind)).collect();
+                        return Err(AppError::new(
+                            ErrorKind::NotFound,
+                            format!(
+                                "{}; suggestions: {}",
+                                e.message(),
+                                if names.is_empty() {
+                                    "(none)".into()
+                                } else {
+                                    names.join(", ")
+                                }
+                            ),
+                        ));
+                    }
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
+            };
             if wants_json {
                 write_json(
                     stdout,
@@ -586,6 +641,7 @@ async fn dispatch<Out: Write, ErrW: Write>(
             crate_version,
             item_type,
             limit,
+            r#match,
         } => {
             let crate_name = CrateName::parse(crate_name)?;
             let query = SearchQuery::parse(query, true)?;
@@ -593,10 +649,12 @@ async fn dispatch<Out: Write, ErrW: Write>(
                 Some(t) if !t.is_empty() => Some(ItemKind::parse(t)?),
                 _ => None,
             };
+            let match_mode = crate::domain::MatchMode::parse(r#match)?;
             let version = VersionArg::parse_opt(crate_version.as_deref())?;
             let origin = docs_origin_for_crate(cfg, crate_name.as_str());
             let url =
                 docs_rs::all_html_url_on_origin(&origin, crate_name.as_str(), version.as_str())?;
+            let limit = (*limit).min(crate::config::MAX_SEARCH_IN_CRATE_LIMIT);
             if dry_run {
                 return emit_dry_run(
                     "search-in-crate",
@@ -606,7 +664,8 @@ async fn dispatch<Out: Write, ErrW: Write>(
                         query: query.as_str(),
                         version: version.as_str(),
                         item_type: kind_filter.map(|k| k.as_str()),
-                        limit: *limit,
+                        match_mode: Some(match_mode.as_str()),
+                        limit,
                     },
                     wants_json,
                     start,
@@ -626,7 +685,8 @@ async fn dispatch<Out: Write, ErrW: Write>(
                 version.as_str(),
                 query.as_str(),
                 kind_filter,
-                *limit,
+                limit,
+                match_mode,
             )
             .await;
             progress.finish();
@@ -653,6 +713,7 @@ async fn dispatch<Out: Write, ErrW: Write>(
 
 fn doctor<Out: Write>(
     cfg: &Config,
+    online: bool,
     wants_json: bool,
     start: Instant,
     locale: Locale,
@@ -847,6 +908,36 @@ fn doctor<Out: Write>(
         ok: true,
         detail: locale.as_bcp47().into(),
     });
+
+    // Contact URL should not be the historical placeholder host.
+    let ua_contact_ok = !cfg.user_agent.contains("github.com/docsrs-cli/docsrs-cli");
+    checks.push(DoctorCheck {
+        name: "user_agent_contact",
+        ok: ua_contact_ok,
+        detail: if ua_contact_ok {
+            "contact is not the placeholder docsrs-cli org".into()
+        } else {
+            "placeholder contact host github.com/docsrs-cli/docsrs-cli is invalid".into()
+        },
+    });
+
+    if online {
+        // Sync DNS/TCP probe (no async runtime needed inside doctor).
+        for (name, host) in [("online_crates_io", "crates.io"), ("online_docs_rs", "docs.rs")] {
+            let ok_probe = std::net::ToSocketAddrs::to_socket_addrs(&format!("{host}:443"))
+                .map(|mut it| it.next().is_some())
+                .unwrap_or(false);
+            checks.push(DoctorCheck {
+                name,
+                ok: ok_probe,
+                detail: if ok_probe {
+                    format!("{host}:443 resolves")
+                } else {
+                    format!("{host}:443 DNS/resolve failed")
+                },
+            });
+        }
+    }
 
     let ok = checks.iter().all(|c| c.ok);
     let data = DoctorData { ok, checks };
@@ -1211,7 +1302,7 @@ fn command_tree_data() -> CommandTree {
             CommandNode {
                 name: "search-crates",
                 about: "Search crates on crates.io",
-                args: &["query", "--per-page", "--sort", "--page"],
+                args: &["query", "--per-page", "--sort", "--page", "--page-token"],
                 subcommands: &[],
             },
             CommandNode {
@@ -1223,13 +1314,13 @@ fn command_tree_data() -> CommandTree {
             CommandNode {
                 name: "get-item",
                 about: "Fetch documentation for a typed item",
-                args: &["crate_name", "item_type", "item_path", "--crate-version"],
+                args: &["crate_name", "item_type", "item_path", "--crate-version", "--suggest"],
                 subcommands: &[],
             },
             CommandNode {
                 name: "search-in-crate",
                 about: "Search symbols in crate all.html index",
-                args: &["crate_name", "query", "--crate-version", "--item-type", "--limit"],
+                args: &["crate_name", "query", "--crate-version", "--item-type", "--limit", "--match"],
                 subcommands: &[],
             },
             CommandNode {
@@ -1241,7 +1332,7 @@ fn command_tree_data() -> CommandTree {
             CommandNode {
                 name: "doctor",
                 about: "Validate local TLS/config readiness",
-                args: &[],
+                args: &["--online"],
                 subcommands: &[],
             },
             CommandNode {
@@ -1315,6 +1406,10 @@ fn schema_cmd<Out: Write>(
         "version" => include_str!("../docs/schemas/version.schema.json"),
         "doctor" => include_str!("../docs/schemas/doctor.schema.json"),
         "commands" => include_str!("../docs/schemas/commands.schema.json"),
+        "schema" => include_str!("../docs/schemas/schema.schema.json"),
+        "completions" => include_str!("../docs/schemas/completions.schema.json"),
+        "error" => include_str!("../docs/schemas/error.schema.json"),
+        "dry-run" => include_str!("../docs/schemas/dry-run.schema.json"),
         "cache" | "cache-clear" | "cache-stats" => {
             include_str!("../docs/schemas/cache.schema.json")
         }
@@ -1389,12 +1484,13 @@ struct SearchCratesDryParams<'a> {
     per_page: u32,
     sort: &'a str,
     page: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_token: Option<&'a str>,
 }
 
 /// Typed dry-run params for `readme`.
 #[derive(Debug, Serialize)]
 struct ReadmeDryParams<'a> {
-    #[serde(rename = "crate")]
     crate_name: &'a str,
     version: &'a str,
 }
@@ -1402,7 +1498,6 @@ struct ReadmeDryParams<'a> {
 /// Typed dry-run params for `get-item`.
 #[derive(Debug, Serialize)]
 struct GetItemDryParams<'a> {
-    #[serde(rename = "crate")]
     crate_name: &'a str,
     item_type: &'a str,
     item_path: &'a str,
@@ -1412,12 +1507,13 @@ struct GetItemDryParams<'a> {
 /// Typed dry-run params for `search-in-crate`.
 #[derive(Debug, Serialize)]
 struct SearchInCrateDryParams<'a> {
-    #[serde(rename = "crate")]
     crate_name: &'a str,
     query: &'a str,
     version: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     item_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_mode: Option<&'a str>,
     limit: u32,
 }
 

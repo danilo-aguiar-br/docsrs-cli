@@ -1,7 +1,6 @@
 [English](README.md)
 
 # docsrs-cli
-
 > Busque docs do crates.io e docs.rs em um tiro para agentes.
 
 [![docs.rs](https://img.shields.io/docsrs/docsrs-cli)](https://docs.rs/docsrs-cli)
@@ -18,6 +17,7 @@
 - Sem daemon, sem sessão sticky, sem telemetria de produto
 - JSON escolhido automaticamente quando stdout não é TTY
 - HTTP público apenas contra allowlist de hosts de documentação
+- A linha de produto atual é 1.1.x
 
 
 ## A Dor
@@ -29,18 +29,20 @@
 ## Por quê
 - Envelopes JSON estáveis no stdout em todo comando
 - Caminho Markdown humano quando você força `--format markdown`
-- Cache em disco XDG com TTL e orçamento soft
+- Cache em disco XDG com TTL, orçamento soft e `data.cache_hit`
 - Rate limits educados, retry HTTP com full-jitter e shutdown cancel-safe
 - Exit codes que o agente ramifica sem parsear prosa
+- Match modes ranqueados reduzem falsos positivos ruidosos
 
 
 ## Superpoderes
-- `search-crates` no crates.io com paginação e ordenação
-- `readme` com o docblock de visão geral no docs.rs
-- `get-item` para páginas rustdoc tipadas por kind e path
-- `search-in-crate` sobre o índice `all.html` do crate
+- `search-crates` no crates.io com paginação, ordenação e `--page-token`
+- `readme` com overview no docs.rs e `resolved_version`
+- `get-item` para páginas rustdoc tipadas incluindo métodos associados
+- `search-in-crate` sobre `all.html` com `--match exact|prefix|substring`
 - Fetch de stdlib para `std`, `core` e `alloc` via doc.rust-lang.org
 - `commands`, `schema`, `doctor`, `version` para descoberta de agentes
+- `doctor --online` para probes DNS opt-in em crates.io e docs.rs
 - `cache` e `config` para manutenção XDG sem segredos
 
 
@@ -50,7 +52,9 @@ cargo install docsrs-cli --locked
 docsrs-cli search-crates serde --json
 docsrs-cli readme tokio --json
 docsrs-cli get-item clap trait clap::Parser --json
-docsrs-cli doctor --json
+docsrs-cli get-item tokio fn runtime::Runtime::new --json
+docsrs-cli search-in-crate serde Serialize --match prefix --json
+docsrs-cli doctor --online --json
 ```
 
 
@@ -67,49 +71,65 @@ docsrs-cli doctor --json
 - Planeje URLs sem rede com `--dry-run`
 - Aumente o orçamento wall-clock com `--timeout <seconds>`
 - Desabilite o cache em disco com `--no-cache`
+- Knobs de produto usam flags CLI ou XDG `config.toml`, nunca env de produto
 
 
 ## Comandos
 - Superfície completa tem 11 top-level commands
-- `search-crates <query> [--page N] [--per-page N] [--sort KIND]` — busca no crates.io
+- `search-crates [query] [--page N] [--per-page N] [--sort KIND] [--page-token TOKEN]`
+- A query pode ser omitida quando `--page-token` carrega a query completa
+- `--page` conflita com `--page-token`
 - `--sort` aceita `relevance`, `downloads`, `recent-downloads`, `recent-updates`, `new`, `alphabetical`
 - `readme <crate> [--crate-version V]` — docblock de overview no docs.rs
-- `get-item <crate> <item_type> <item_path> [--crate-version V]` — item rustdoc tipado
-- `item_type` aceita `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
+- `get-item <crate> <item_type> <item_path> [--crate-version V] [--suggest]`
+- `item_type` aceita `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`/`method`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
+- `method` é alias de `fn` para métodos associados
+- Métodos associados resolvem para a página do tipo pai com `#method.name` e `item_name`
 - `item_path` aceita separadores `::` ou `/` e prefixo opcional do crate
-- `search-in-crate <crate> [query] [--crate-version V] [--item-type K] [--limit N]` — busca em `all.html`
-- `query` vazio lista itens classificados até `--limit`
+- `--suggest` em get-item 404 lista símbolos próximos em `all.html`
+- `search-in-crate <crate> [query] [--crate-version V] [--item-type K] [--limit N] [--match MODE]`
+- `--match` aceita `exact`, `prefix` (padrão), `substring`
+- `query` vazio lista itens classificados até `--limit` (clamp em 1000)
+- Hits podem incluir `score` quando há query
 - `version` — versão do binário
 - `doctor` — prontidão local de TLS, paths, concorrência e retry
+- `doctor --online` — também sonda DNS de crates.io e docs.rs
 - `commands` — árvore completa de comandos para agentes
 - `schema --cmd <name>` — JSON Schema do payload de um comando
-- Alvos de schema: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `cache`, `config`
-- `completions <shell>` — `bash`, `zsh`, `fish`, `elvish`, `power-shell` (alias `powershell`)
-- Exemplos: `docsrs-cli completions bash`, `completions zsh`, `completions fish`, `completions elvish`, `completions power-shell`, `completions powershell`
+- Alvos de schema: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config`
+- `completions <shell>` — script cru por padrão; JSON só com `--json` explícito
+- Shells: `bash`, `zsh`, `fish`, `elvish`, `power-shell` (alias `powershell`)
 - `cache stats` — reporta contagem, bytes e orçamento
 - `cache clear` — apaga bodies HTTP em cache
 - `config path` — imprime dirs resolvidos e camada vencedora
 - `config show` — imprime configuração efetiva de runtime
 - `config init [--force]` — cria `config.toml` padrão
-- Exemplo de sobrescrita: `docsrs-cli config init --force --json`
+
+
+## Destaques do contrato JSON
+- Envelope de sucesso: `schema_version`, `ok`, `command`, `data`, `duration_ms`
+- Payloads de rede usam `crate_name` canônico (nunca `crate`)
+- Payloads de rede expõem `cache_hit` só para cache local em disco
+- `get-item` expõe `item_name` e `resolved_version` opcional
+- `readme` expõe `resolved_version` opcional (canal da stdlib é `stable`)
+- `search-in-crate` ecoa `match_mode` e `item_type` opcional
+- Tokens de paginação de `search-crates` ficam em `data.meta.next_page` / `prev_page`
 
 
 ## Variáveis de Ambiente
-- `DOCSRS_CLI_HOME` — raiz de sandbox para config e cache
-- `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` — overrides de path
-- `DOCSRS_CLI_TIMEOUT_SECS` — timeout wall-clock
-- `DOCSRS_CLI_USER_AGENT` / `DOCSRS_CLI_CONTACT` — headers de identidade
-- `DOCSRS_CLI_CACHE_TTL_SECS` / `DOCSRS_CLI_MAX_CACHE_BYTES` / `DOCSRS_CLI_NO_CACHE`
-- `DOCSRS_CLI_MAX_BODY_BYTES` / `DOCSRS_CLI_MAX_OUTPUT_BYTES` — tetos rígidos
-- `DOCSRS_CLI_MAX_CONCURRENCY` — orçamento de workers de parse (`0` = auto)
-- `DOCSRS_CLI_MAX_RETRIES` / `DOCSRS_CLI_RETRY_BASE_MS` / `DOCSRS_CLI_RETRY_MAX_DELAY_MS`
-- `DOCSRS_CLI_DISABLE_RETRY` — kill switch de retries HTTP
-- `DOCSRS_CLI_LANG` — locale de stderr humano (`en` ou `pt-BR`)
-- `RUST_LOG` / `NO_COLOR` / `CLICOLOR_FORCE` — apenas diagnósticos
+- `DOCSRS_CLI_HOME` — raiz de sandbox para config e cache (testes / isolamento)
+- `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` — overrides apenas de path
+- Knobs de produto (timeout, UA, TTL de cache, retries, concurrency, lang) não são lidos de `DOCSRS_CLI_*` em runtime
+- Use flags CLI e XDG `config.toml` para settings de produto
+- `RUST_LOG` — filtro de tracing (só stderr; sem telemetria de produto)
+- `NO_COLOR` / `CLICOLOR_FORCE` — apenas diagnósticos
 
 
 ## Padrões de Integração
 - Subprocesso de agente: `docsrs-cli get-item serde trait Serialize --json`
+- Fetch de método: `docsrs-cli get-item tokio fn runtime::Runtime::new --json`
+- Símbolos ranqueados: `docsrs-cli search-in-crate serde Serialize --match prefix --json`
+- Paginar: leia `meta.next_page` e rode `docsrs-cli search-crates --page-token '...' --json`
 - Descoberta primeiro: `docsrs-cli commands --json` depois `schema --cmd get-item --json`
 - Plano offline: `docsrs-cli --dry-run readme tokio --json`
 - Veja [INTEGRATIONS.pt-BR.md](INTEGRATIONS.pt-BR.md) e [docs/AGENTS.pt-BR.md](docs/AGENTS.pt-BR.md)
@@ -120,22 +140,26 @@ docsrs-cli doctor --json
 - Runtime Tokio multi-thread com orçamento Semaphore
 - `spawn_blocking` para parse HTML pesado
 - Cache em disco evita downloads repetidos dentro do TTL
+- Respostas de cache quente definem `data.cache_hit` como true
 
 
 ## Requisitos de Memória
 - Teto padrão de body é 10 MiB por resposta
 - Teto padrão de output é 2 MiB por emissão
 - Orçamento soft padrão de cache em disco é 256 MiB
-- Eleve tetos só com flags ou env explícitos, nunca acima do hard ceiling
+- Eleve tetos só com flags CLI ou XDG `config.toml`, nunca acima do hard ceiling
 
 
 ## FAQ de Troubleshooting
 - Exit `66` significa crate ou item não encontrado
+- Use `get-item ... --suggest` para listar símbolos próximos após 404
 - Exit `69` significa rate limit ou outage temporário
 - Exit `74` significa falha de transporte; retente com backoff
 - Exit `78` significa falha de config ou prontidão de path local
 - Exit `124` significa timeout wall-clock
 - Rode `docsrs-cli doctor --json` antes de culpar a rede
+- Rode `docsrs-cli doctor --online --json` para sondar DNS de crates.io e docs.rs
+- Hits ruidosos: troque `--match substring` por `prefix` ou `exact`
 
 
 ## Mapa de Documentação
@@ -162,6 +186,7 @@ docsrs-cli doctor --json
 
 ## Changelog
 - Veja [CHANGELOG.pt-BR.md](CHANGELOG.pt-BR.md) para o histórico de versões
+- Notas da release 1.1.0 ficam sob `[1.1.0]`
 
 
 ## Licença

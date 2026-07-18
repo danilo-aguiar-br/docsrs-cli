@@ -3,18 +3,43 @@
   "title": "docsrs-cli readme success data",
   "type": "object",
   "description": "Payload under envelope.data for command readme. Outer envelope always has schema_version=1, ok, command, duration_ms. Optional fields are omitted when absent (never JSON null).",
-  "required": ["crate_name", "version", "markdown", "empty", "truncated", "source_url"],
+  "required": [
+    "crate_name",
+    "version",
+    "markdown",
+    "empty",
+    "truncated",
+    "source_url",
+    "cache_hit"
+  ],
   "properties": {
-    "crate_name": { "type": "string" },
-    "version": { "type": "string" },
+    "crate_name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
     "resolved_version": {
       "type": "string",
       "description": "Omitted when docs.rs did not resolve a concrete version (never JSON null)"
     },
-    "markdown": { "type": "string" },
-    "empty": { "type": "boolean" },
-    "truncated": { "type": "boolean" },
-    "source_url": { "type": "string", "format": "uri" }
+    "markdown": {
+      "type": "string"
+    },
+    "empty": {
+      "type": "boolean"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "cache_hit": {
+      "type": "boolean",
+      "description": "True when the HTTP response body was served from the local disk cache"
+    }
   },
   "additionalProperties": false
 }

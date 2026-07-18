@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli completions success data",
+  "type": "object",
+  "description": "Payload under envelope.data for command completions when --json or --format json is explicit. Without those flags, stdout is a raw shell script (not this envelope).",
+  "required": ["shell", "script"],
+  "additionalProperties": false,
+  "properties": {
+    "shell": {
+      "type": "string",
+      "description": "Canonical shell id (bash, zsh, fish, elvish, power-shell)"
+    },
+    "script": {
+      "type": "string",
+      "description": "Completion script body for the requested shell"
+    }
+  }
+}

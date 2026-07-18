@@ -32,5 +32,6 @@
   "meta": {
     "total": 2,
     "next_page": "page=2"
-  }
+  },
+  "cache_hit": false
 }

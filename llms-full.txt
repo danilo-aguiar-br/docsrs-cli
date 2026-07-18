@@ -1,11 +1,22 @@
 # docsrs-cli
-
 > One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
 
-docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY.
+docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 1.1.0.
+
+## Release 1.1.0 agent surface
+- `--match exact|prefix|substring` on search-in-crate (default prefix)
+- `--page-token` on search-crates without positional query when the token carries the full query
+- `--suggest` on get-item 404 for nearby symbols
+- `doctor --online` for DNS probes to crates.io and docs.rs
+- `data.cache_hit` on network payloads (local disk cache only)
+- Canonical wire field `crate_name`
+- `item_name` on get-item; associated methods resolve to `#method.name`
+- `resolved_version` for concrete SemVer or stdlib channel `stable`
+- Ranked hit `score` on search-in-crate
+- Product knobs: CLI flags + XDG config.toml only (path sandbox env remains)
+- Completions emit raw shell scripts unless `--json` is explicit
 
 ## Primary Documentation
-
 - [README](README.md): landing page with install, commands, env, FAQ
 - [README pt-BR](README.pt-BR.md): Portuguese landing page
 - [How to use](docs/HOW_TO_USE.md): install to first success in 60 seconds
@@ -16,7 +27,7 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [Cookbook pt-BR](docs/COOKBOOK.pt-BR.md): receitas em português
 - [Cross platform](docs/CROSS_PLATFORM.md): Linux macOS Windows matrix
 - [Cross platform pt-BR](docs/CROSS_PLATFORM.pt-BR.md): matriz multiplataforma
-- [Migration](docs/MIGRATION.md): migration and compatibility notes
+- [Migration](docs/MIGRATION.md): migration from 0.1.x to 1.1.0
 - [Migration pt-BR](docs/MIGRATION.pt-BR.md): notas de migração
 - [Testing](docs/TESTING.md): test categories and how to run
 - [Testing pt-BR](docs/TESTING.pt-BR.md): guia de testes
@@ -30,6 +41,10 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [version schema](docs/schemas/version.schema.json)
 - [cache schema](docs/schemas/cache.schema.json)
 - [config schema](docs/schemas/config.schema.json)
+- [schema meta](docs/schemas/schema.schema.json)
+- [completions schema](docs/schemas/completions.schema.json)
+- [error schema](docs/schemas/error.schema.json)
+- [dry-run schema](docs/schemas/dry-run.schema.json)
 - [Integrations](INTEGRATIONS.md): agent and platform catalog
 - [Integrations pt-BR](INTEGRATIONS.pt-BR.md)
 - [Changelog](CHANGELOG.md)
@@ -42,11 +57,11 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [Code of Conduct pt-BR](CODE_OF_CONDUCT.pt-BR.md)
 - [English skill](skills/docsrs-cli-en/SKILL.md)
 - [Portuguese skill](skills/docsrs-cli-pt/SKILL.md)
-- [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md)
-- [Error model ADR](docs/decisions/0002-error-model.md)
-- [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md)
+- [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md) / [pt-BR](docs/decisions/0001-http-retry-policy.pt-BR.md)
+- [Error model ADR](docs/decisions/0002-error-model.md) / [pt-BR](docs/decisions/0002-error-model.pt-BR.md)
+- [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md) / [pt-BR](docs/decisions/0003-web-fetch-scope.pt-BR.md)
+- [gaps.md](gaps.md): closed product gap matrix for 1.1.0
 
 ## Optional
-
 - [llms.txt](llms.txt): short discovery document
 - [llms.pt-BR.txt](llms.pt-BR.txt): Portuguese discovery document

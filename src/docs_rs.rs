@@ -36,6 +36,7 @@ use crate::config::{
     HOST_DOC_RUST_LANG_ORG, HOST_DOCS_RS, MAX_SEARCH_IN_CRATE_LIMIT, is_stdlib_crate,
     stdlib_channel,
 };
+use crate::domain::MatchMode;
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::http::{HttpClient, content_type_looks_html, decode_utf8};
 use crate::item_kind::{ItemKind, rustc_crate_name};
@@ -58,6 +59,8 @@ pub struct ReadmeData {
     pub truncated: bool,
     /// Final source URL of the HTML page.
     pub source_url: String,
+    /// True when the HTTP body was served from the local disk cache.
+    pub cache_hit: bool,
 }
 
 /// Typed item documentation payload.
@@ -69,6 +72,8 @@ pub struct GetItemData {
     pub item_type: String,
     /// Requested item path.
     pub item_path: String,
+    /// Last path segment (leaf name) for agent convenience.
+    pub item_name: String,
     /// Requested version token.
     pub version: String,
     /// Version resolved by docs.rs redirects when known.
@@ -84,6 +89,8 @@ pub struct GetItemData {
     pub source_url: String,
     /// Page title when available.
     pub title: String,
+    /// True when the HTTP body was served from the local disk cache.
+    pub cache_hit: bool,
 }
 
 /// Single all.html hit.
@@ -95,6 +102,9 @@ pub struct SearchInCrateHit {
     pub kind: String,
     /// Absolute URL of the item documentation page.
     pub url: String,
+    /// Match quality score (0 = best). Omitted when query is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<u8>,
 }
 
 /// search-in-crate result set (`truncated` is true when `total > emitted`).
@@ -102,10 +112,15 @@ pub struct SearchInCrateHit {
 pub struct SearchInCrateData {
     /// Requested crate name.
     pub crate_name: String,
-    /// Substring filter applied to hits.
+    /// Text filter applied to hits.
     pub query: String,
     /// Requested version token.
     pub version: String,
+    /// Echo of the applied item-type filter when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    /// Match mode applied (`exact` | `prefix` | `substring`).
+    pub match_mode: String,
     /// Total classified hits before the limit.
     pub total: usize,
     /// Number of hits actually emitted.
@@ -116,6 +131,8 @@ pub struct SearchInCrateData {
     pub truncated: bool,
     /// Final source URL of the all.html page.
     pub source_url: String,
+    /// True when the HTTP body was served from the local disk cache.
+    pub cache_hit: bool,
 }
 
 fn default_docs_origin(crate_name: &str) -> String {
@@ -174,7 +191,41 @@ pub fn get_item_url(
     )
 }
 
+/// Detect associated method / inherent method path: `Type::method` where Type is
+/// UpperCamel and method starts lowercase (or kind forced as method via parse alias).
+fn is_method_path(kind: ItemKind, segs: &[String]) -> bool {
+    if segs.len() < 2 {
+        return false;
+    }
+    if kind != ItemKind::Fn {
+        return false;
+    }
+    let parent = segs[segs.len() - 2].as_str();
+    let method = segs[segs.len() - 1].as_str();
+    let parent_type = parent
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase());
+    let method_fn = method
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_');
+    parent_type && method_fn
+}
+
+/// Parent type kinds tried when resolving a method URL (struct first — common case).
+const METHOD_PARENT_KINDS: &[ItemKind] = &[
+    ItemKind::Struct,
+    ItemKind::Enum,
+    ItemKind::Trait,
+    ItemKind::Type,
+    ItemKind::Union,
+];
+
 /// Build get-item URL against a custom origin (wiremock tests).
+///
+/// Associated methods (`Runtime::new`) resolve to the parent type page plus
+/// `#method.{name}` (rustdoc layout). Free functions keep `{kind}.{name}.html`.
 ///
 /// # Errors
 ///
@@ -187,12 +238,20 @@ pub fn get_item_url_on_origin(
     kind: ItemKind,
     segments: &[String],
 ) -> AppResult<Url> {
+    get_item_url_on_origin_with_parent_kind(origin, crate_name, version, kind, segments, None)
+}
+
+/// Like [`get_item_url_on_origin`] but forces the parent type kind for methods.
+pub fn get_item_url_on_origin_with_parent_kind(
+    origin: &str,
+    crate_name: &str,
+    version: &str,
+    kind: ItemKind,
+    segments: &[String],
+    parent_kind_override: Option<ItemKind>,
+) -> AppResult<Url> {
     let origin = origin.trim_end_matches('/');
     let rustc_root = rustc_crate_name(crate_name);
-    // Optional leading crate prefix (`tokio::runtime::Runtime`) is stripped only when
-    // it is a path prefix (2+ segments) or the target is the crate-root module.
-    // A single segment equal to the crate name is the item itself (e.g. attribute
-    // `async_trait` on crate `async-trait`) and must NOT be stripped.
     let segs: Vec<String> = {
         let mut s = segments.to_vec();
         if let Some(first) = s.first() {
@@ -205,8 +264,64 @@ pub fn get_item_url_on_origin(
         s
     };
 
+    // Associated method: Type::method → parent page + #method.name
+    if is_method_path(kind, &segs) {
+        let method_name = segs.last().expect("is_method_path requires >=2 segs").clone();
+        let parent_name = segs[segs.len() - 2].clone();
+        let parent_kind = parent_kind_override.unwrap_or(ItemKind::Struct);
+        let mod_parts: Vec<String> = if segs.len() == 2 {
+            if is_stdlib_crate(crate_name) {
+                Vec::new()
+            } else {
+                vec![rustc_root.clone()]
+            }
+        } else {
+            let mut m = if is_stdlib_crate(crate_name) {
+                Vec::new()
+            } else {
+                vec![rustc_root.clone()]
+            };
+            for p in &segs[..segs.len() - 2] {
+                m.push(rustc_crate_name(p));
+            }
+            m
+        };
+        let url_str = if is_stdlib_crate(crate_name) {
+            let channel = stdlib_channel(version);
+            if mod_parts.is_empty() {
+                format!(
+                    "{origin}/{channel}/{crate_name}/{}.{}.html#method.{method_name}",
+                    parent_kind.file_prefix(),
+                    parent_name
+                )
+            } else {
+                format!(
+                    "{origin}/{channel}/{crate_name}/{}/{}.{}.html#method.{method_name}",
+                    mod_parts.join("/"),
+                    parent_kind.file_prefix(),
+                    parent_name
+                )
+            }
+        } else if mod_parts.is_empty() {
+            format!(
+                "{origin}/{crate_name}/{version}/{}/{}.{}.html#method.{method_name}",
+                rustc_root,
+                parent_kind.file_prefix(),
+                parent_name
+            )
+        } else {
+            format!(
+                "{origin}/{crate_name}/{version}/{}/{}.{}.html#method.{method_name}",
+                mod_parts.join("/"),
+                parent_kind.file_prefix(),
+                parent_name
+            )
+        };
+        return Url::parse(&url_str)
+            .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid get-item URL", e));
+    }
+
     let url_str = if is_stdlib_crate(crate_name) {
-        // doc.rust-lang.org/{channel}/{crate}/[mod/]{kind}.{Name}.html
         let channel = stdlib_channel(version);
         if kind == ItemKind::Module {
             let mut parts: Vec<String> = Vec::new();
@@ -317,17 +432,81 @@ pub fn all_html_url_on_origin(origin: &str, crate_name: &str, version: &str) -> 
         .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid all.html URL", e))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn extract_resolved_version(final_url: &Url, requested: &str) -> Option<String> {
-    let mut segs = final_url.path_segments()?.filter(|s| !s.is_empty());
-    let _pkg = segs.next()?;
-    let ver = segs.next()?;
-    if ver == "latest" {
+    extract_resolved_version_for_crate(final_url, requested, None)
+}
+
+/// Resolve version/channel from the final URL, aware of docs.rs vs stdlib layout.
+///
+/// - docs.rs: `/{pkg}/{version}/…` — second path segment is the version
+/// - doc.rust-lang.org: `/{channel}/{crate}/…` — first path segment is channel/version
+fn extract_resolved_version_for_crate(
+    final_url: &Url,
+    requested: &str,
+    crate_name: Option<&str>,
+) -> Option<String> {
+    let host = final_url.host_str().unwrap_or("");
+    let segs: Vec<&str> = final_url
+        .path_segments()?
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segs.is_empty() {
         return None;
     }
-    if requested == "latest" || ver != requested {
-        return Some(ver.to_string());
+
+    let is_stdlib_host = host.eq_ignore_ascii_case(HOST_DOC_RUST_LANG_ORG)
+        || crate_name.is_some_and(is_stdlib_crate)
+        || segs
+            .get(1)
+            .is_some_and(|s| matches!(*s, "std" | "core" | "alloc"));
+
+    if is_stdlib_host {
+        // /{channel}/{crate}/… — never emit crate name as version
+        let channel = segs.first()?;
+        if matches!(*channel, "std" | "core" | "alloc") {
+            return None;
+        }
+        return Some((*channel).to_string());
     }
-    Some(ver.to_string())
+
+    // docs.rs: /{pkg}/{version}/…
+    let ver = segs.get(1)?;
+    if *ver == "latest" {
+        return None;
+    }
+    if requested == "latest" || *ver != requested {
+        return Some((*ver).to_string());
+    }
+    Some((*ver).to_string())
+}
+
+/// Try to scrape a concrete SemVer from docs.rs HTML when the URL still says `/latest/`.
+///
+/// Only accepts versions that belong to `crate_name` (never a dependency hit).
+fn scrape_docs_rs_version_from_html(html: &str, crate_name: &str) -> Option<String> {
+    let crate_name = crate_name.trim();
+    if crate_name.is_empty() || is_stdlib_crate(crate_name) {
+        return None;
+    }
+    // Crate names are already validated (`[A-Za-z][A-Za-z0-9_-]*`); escape for safety.
+    let escaped = regex::escape(crate_name);
+    // Prefer paths for THIS crate: `/tokio/1.53.0/` or `docs.rs/tokio/1.53.0`
+    let re_path = Regex::new(&format!(
+        r"(?i)(?:https?://docs\.rs/|/){escaped}/([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\b"
+    ))
+    .ok()?;
+    if let Some(c) = re_path.captures(html) {
+        return c.get(1).map(|m| m.as_str().to_string());
+    }
+    // Title may include "crate version" on some rustdoc skins
+    let re_title = Regex::new(&format!(
+        r"(?i)<title>[^<]*?\b{escaped}\b[^<]*?\b([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\b"
+    ))
+    .ok()?;
+    re_title
+        .captures(html)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }
 
 /// Compiled once: strip `on*` event handlers from HTML fragments (hot path for every HTML→MD).
@@ -469,7 +648,14 @@ pub async fn fetch_readme_at(
             extract_readme_markdown_from_html(&text)
         })
         .await?;
-    let resolved = extract_resolved_version(&resp.final_url, version);
+    let mut resolved =
+        extract_resolved_version_for_crate(&resp.final_url, version, Some(crate_name));
+    if resolved.is_none() {
+        // Body still available only as markdown path; re-decode for scrape when latest.
+        if let Ok(text) = decode_utf8(&resp.body) {
+            resolved = scrape_docs_rs_version_from_html(&text, crate_name);
+        }
+    }
     Ok(ReadmeData {
         crate_name: crate_name.to_string(),
         version: version.to_string(),
@@ -478,6 +664,7 @@ pub async fn fetch_readme_at(
         empty,
         truncated: false,
         source_url: resp.final_url.to_string(),
+        cache_hit: resp.cache_hit,
     })
 }
 
@@ -504,8 +691,10 @@ pub async fn fetch_item(
     )
     .await
 }
-
 /// Fetch item against a configurable origin (offline mocks).
+///
+/// For associated methods, tries parent type pages (struct → enum → trait → …)
+/// until one returns HTTP 200.
 ///
 /// # Errors
 ///
@@ -519,6 +708,45 @@ pub async fn fetch_item_on_origin(
     kind: ItemKind,
     segments: &[String],
 ) -> AppResult<GetItemData> {
+    // Strip crate prefix the same way URL builder does for method detection.
+    let rustc_root = rustc_crate_name(crate_name);
+    let segs_for_detect: Vec<String> = {
+        let mut s = segments.to_vec();
+        if let Some(first) = s.first() {
+            let f = first.as_str();
+            let is_crate_prefix = f == crate_name || f == rustc_root.as_str();
+            if is_crate_prefix && (s.len() >= 2 || kind == ItemKind::Module) {
+                s.remove(0);
+            }
+        }
+        s
+    };
+
+    if is_method_path(kind, &segs_for_detect) {
+        let mut last_err: Option<AppError> = None;
+        for parent_kind in METHOD_PARENT_KINDS {
+            let url = get_item_url_on_origin_with_parent_kind(
+                origin,
+                crate_name,
+                version,
+                kind,
+                segments,
+                Some(*parent_kind),
+            )?;
+            match fetch_item_at(http, crate_name, version, kind, segments, &url).await {
+                Ok(data) => return Ok(data),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        return Err(last_err.unwrap_or_else(|| {
+            AppError::new(ErrorKind::NotFound, "method parent type page not found")
+        }));
+    }
+
     let url = get_item_url_on_origin(origin, crate_name, version, kind, segments)?;
     fetch_item_at(http, crate_name, version, kind, segments, &url).await
 }
@@ -538,7 +766,12 @@ pub async fn fetch_item_at(
     segments: &[String],
     url: &Url,
 ) -> AppResult<GetItemData> {
-    let resp = http.get_html(url).await?;
+    // HTTP does not send fragments; strip for request, keep for source_url.
+    let mut fetch_url = url.clone();
+    let fragment = fetch_url.fragment().map(str::to_string);
+    fetch_url.set_fragment(None);
+
+    let resp = http.get_html(&fetch_url).await?;
     if resp.status.as_u16() == 404 {
         return Err(AppError::from_http_status(
             404,
@@ -552,32 +785,57 @@ pub async fn fetch_item_at(
         ));
     }
 
+    let method_anchor = fragment
+        .as_deref()
+        .and_then(|f| f.strip_prefix("method."))
+        .map(str::to_string);
     let body = resp.body.clone();
+    let method_anchor_cpu = method_anchor.clone();
     let (markdown, empty) = http
         .budget()
         .run_cpu_bound(move || {
             let text = decode_utf8(&body)?;
-            extract_item_markdown_from_html(&text)
+            if let Some(ref m) = method_anchor_cpu {
+                extract_method_markdown_from_html(&text, m)
+            } else {
+                extract_item_markdown_from_html(&text)
+            }
         })
         .await?;
     let item_path = segments.join("::");
+    let item_name = segments
+        .last()
+        .cloned()
+        .unwrap_or_else(|| item_path.clone());
     let title = format!("{item_path} ({})", kind.as_str());
-    let resolved = extract_resolved_version(&resp.final_url, version);
+    let mut resolved =
+        extract_resolved_version_for_crate(&resp.final_url, version, Some(crate_name));
+    if resolved.is_none() {
+        if let Ok(text) = decode_utf8(&resp.body) {
+            resolved = scrape_docs_rs_version_from_html(&text, crate_name);
+        }
+    }
+
+    let mut source_url = resp.final_url.clone();
+    if let Some(f) = fragment {
+        source_url.set_fragment(Some(&f));
+    }
 
     Ok(GetItemData {
         crate_name: crate_name.to_string(),
         item_type: kind.as_str().to_string(),
         item_path,
+        item_name,
         version: version.to_string(),
         resolved_version: resolved,
         markdown,
         empty,
         truncated: false,
-        source_url: resp.final_url.to_string(),
+        source_url: source_url.to_string(),
         title,
+        cache_hit: resp.cache_hit,
     })
 }
-
 /// Parse all.html and filter symbols (production docs.rs).
 ///
 /// # Errors
@@ -591,6 +849,7 @@ pub async fn search_in_crate(
     query: &str,
     item_type: Option<ItemKind>,
     limit: u32,
+    match_mode: MatchMode,
 ) -> AppResult<SearchInCrateData> {
     search_in_crate_on_origin(
         http,
@@ -600,6 +859,7 @@ pub async fn search_in_crate(
         query,
         item_type,
         limit,
+        match_mode,
     )
     .await
 }
@@ -610,6 +870,7 @@ pub async fn search_in_crate(
 ///
 /// Propagates URL build errors from [`all_html_url_on_origin`] and fetch errors
 /// from [`search_in_crate_at`].
+#[allow(clippy::too_many_arguments)]
 pub async fn search_in_crate_on_origin(
     http: &HttpClient,
     origin: &str,
@@ -618,9 +879,20 @@ pub async fn search_in_crate_on_origin(
     query: &str,
     item_type: Option<ItemKind>,
     limit: u32,
+    match_mode: MatchMode,
 ) -> AppResult<SearchInCrateData> {
     let url = all_html_url_on_origin(origin, crate_name, version)?;
-    search_in_crate_at(http, crate_name, version, query, item_type, limit, &url).await
+    search_in_crate_at(
+        http,
+        crate_name,
+        version,
+        query,
+        item_type,
+        limit,
+        match_mode,
+        &url,
+    )
+    .await
 }
 
 /// search-in-crate against a prebuilt all.html URL (wiremock).
@@ -631,6 +903,7 @@ pub async fn search_in_crate_on_origin(
 /// Maps non-success statuses via [`AppError::from_http_status`].
 /// Returns [`ErrorKind::Parse`] on non-UTF-8 bodies or href join failures.
 /// Propagates parse errors from [`search_in_crate_from_html`].
+#[allow(clippy::too_many_arguments)]
 pub async fn search_in_crate_at(
     http: &HttpClient,
     crate_name: &str,
@@ -638,6 +911,7 @@ pub async fn search_in_crate_at(
     query: &str,
     item_type: Option<ItemKind>,
     limit: u32,
+    match_mode: MatchMode,
     url: &Url,
 ) -> AppResult<SearchInCrateData> {
     let resp = http.get_html(url).await?;
@@ -656,6 +930,7 @@ pub async fn search_in_crate_at(
 
     let body = resp.body.clone();
     let source_url = resp.final_url.to_string();
+    let cache_hit = resp.cache_hit;
     let crate_name = crate_name.to_string();
     let version = version.to_string();
     let query = query.to_string();
@@ -669,11 +944,14 @@ pub async fn search_in_crate_at(
                 &query,
                 item_type,
                 limit,
+                match_mode,
                 &source_url,
+                cache_hit,
             )
         })
         .await
 }
+
 
 /// Join relative/absolute/full href against crate rustdoc base.
 ///
@@ -699,11 +977,13 @@ pub fn join_href(base: &Url, href: &str) -> AppResult<String> {
 const RAYON_HIT_THRESHOLD: usize = 64;
 
 /// One classified hit candidate before dedup/limit (index preserves document order).
-type ClassifiedHit = (usize, String, ItemKind, String);
+/// One classified hit candidate before dedup/limit: (index, name, kind, url, score).
+type ClassifiedHit = (usize, String, ItemKind, String, u8);
 
 /// Pure parse of all.html body for offline tests and CPU workers.
 ///
 /// Large candidate lists use `rayon`; small lists stay sequential.
+/// Results are scored and sorted (exact leaf first) before applying `limit`.
 ///
 /// # Errors
 ///
@@ -716,6 +996,7 @@ pub fn parse_all_html_hits(
     query: &str,
     item_type: Option<ItemKind>,
     limit: usize,
+    match_mode: MatchMode,
 ) -> AppResult<Vec<SearchInCrateHit>> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -730,7 +1011,6 @@ pub fn parse_all_html_hits(
     .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid all.html base", e))?;
     let q = query.trim().to_ascii_lowercase();
 
-    // Materialize (name, href) so we can choose sequential vs rayon without holding DOM refs.
     let candidates: Vec<(String, String)> = document
         .select(&a_sel)
         .filter_map(|a| {
@@ -747,9 +1027,9 @@ pub fn parse_all_html_hits(
         .collect();
 
     if candidates.len() < RAYON_HIT_THRESHOLD {
-        return filter_hits_sequential(candidates, &base, &q, item_type, limit);
+        return filter_hits_sequential(candidates, &base, &q, item_type, limit, match_mode);
     }
-    filter_hits_parallel(candidates, &base, &q, item_type, limit)
+    filter_hits_parallel(candidates, &base, &q, item_type, limit, match_mode)
 }
 
 fn filter_hits_sequential(
@@ -758,18 +1038,15 @@ fn filter_hits_sequential(
     q: &str,
     item_type: Option<ItemKind>,
     limit: usize,
+    match_mode: MatchMode,
 ) -> AppResult<Vec<SearchInCrateHit>> {
-    let mut hits = Vec::with_capacity(limit.min(256));
-    let mut seen: HashSet<(String, ItemKind)> = HashSet::new();
-    for (name, href) in candidates {
-        if let Some(hit) = classify_hit(name, &href, base, q, item_type, &mut seen)? {
-            hits.push(hit);
-            if hits.len() >= limit {
-                break;
-            }
+    let mut rows: Vec<ClassifiedHit> = Vec::new();
+    for (idx, (name, href)) in candidates.into_iter().enumerate() {
+        if let Some(hit) = classify_hit_row(idx, name, &href, base, q, item_type, match_mode)? {
+            rows.push(hit);
         }
     }
-    Ok(hits)
+    finalize_hits(rows, limit)
 }
 
 fn filter_hits_parallel(
@@ -778,33 +1055,23 @@ fn filter_hits_parallel(
     q: &str,
     item_type: Option<ItemKind>,
     limit: usize,
+    match_mode: MatchMode,
 ) -> AppResult<Vec<SearchInCrateHit>> {
-    // Parallel classify/filter; preserve original order via index for stable agent output.
     let mapped: AppResult<Vec<Option<ClassifiedHit>>> = candidates
         .into_par_iter()
         .enumerate()
-        .map(|(idx, (name, href))| {
-            let Some(kind) = ItemKind::from_href(&href) else {
-                return Ok(None);
-            };
-            if let Some(filter) = item_type
-                && kind != filter
-            {
-                return Ok(None);
-            }
-            if !q.is_empty() && !name.to_ascii_lowercase().contains(q) {
-                return Ok(None);
-            }
-            let abs = join_href(base, &href)?;
-            Ok(Some((idx, name, kind, abs)))
-        })
+        .map(|(idx, (name, href))| classify_hit_row(idx, name, &href, base, q, item_type, match_mode))
         .collect();
-    let mut rows: Vec<ClassifiedHit> = mapped?.into_iter().flatten().collect();
-    rows.par_sort_unstable_by_key(|(idx, _, _, _)| *idx);
+    let rows: Vec<ClassifiedHit> = mapped?.into_iter().flatten().collect();
+    finalize_hits(rows, limit)
+}
 
+fn finalize_hits(mut rows: Vec<ClassifiedHit>, limit: usize) -> AppResult<Vec<SearchInCrateHit>> {
+    // Score ascending, then original document order for stability.
+    rows.sort_by(|a, b| a.4.cmp(&b.4).then_with(|| a.0.cmp(&b.0)));
     let mut hits = Vec::with_capacity(limit.min(256));
     let mut seen: HashSet<(String, ItemKind)> = HashSet::new();
-    for (_idx, name, kind, abs) in rows {
+    for (_idx, name, kind, abs, score) in rows {
         if !seen.insert((name.clone(), kind)) {
             continue;
         }
@@ -812,6 +1079,7 @@ fn filter_hits_parallel(
             name,
             kind: kind.as_str().to_string(),
             url: abs,
+            score: Some(score),
         });
         if hits.len() >= limit {
             break;
@@ -820,14 +1088,15 @@ fn filter_hits_parallel(
     Ok(hits)
 }
 
-fn classify_hit(
+fn classify_hit_row(
+    idx: usize,
     name: String,
     href: &str,
     base: &Url,
     q: &str,
     item_type: Option<ItemKind>,
-    seen: &mut HashSet<(String, ItemKind)>,
-) -> AppResult<Option<SearchInCrateHit>> {
+    match_mode: MatchMode,
+) -> AppResult<Option<ClassifiedHit>> {
     let Some(kind) = ItemKind::from_href(href) else {
         return Ok(None);
     };
@@ -836,20 +1105,12 @@ fn classify_hit(
     {
         return Ok(None);
     }
-    if !q.is_empty() && !name.to_ascii_lowercase().contains(q) {
+    let Some(score) = match_mode.score(&name, q) else {
         return Ok(None);
-    }
+    };
     let abs = join_href(base, href)?;
-    if !seen.insert((name.clone(), kind)) {
-        return Ok(None);
-    }
-    Ok(Some(SearchInCrateHit {
-        name,
-        kind: kind.as_str().to_string(),
-        url: abs,
-    }))
+    Ok(Some((idx, name, kind, abs, score)))
 }
-
 /// Extract readme markdown from raw HTML (offline tests / pure path).
 ///
 /// # Errors
@@ -890,6 +1151,44 @@ pub fn extract_item_markdown_from_html(html: &str) -> AppResult<(String, bool)> 
     }
 }
 
+/// Extract markdown for a single associated method by rustdoc `id="method.X"`.
+///
+/// Falls back to the full item page when the anchor is missing.
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Parse`] when HTML→Markdown conversion fails.
+/// Extract markdown for a single associated method by rustdoc `id="method.X"`.
+///
+/// When the method anchor is present, converts the parent section if found;
+/// otherwise falls back to the full item page (still useful with `#method.` URL).
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Parse`] when HTML→Markdown conversion fails.
+pub fn extract_method_markdown_from_html(html: &str, method_name: &str) -> AppResult<(String, bool)> {
+    let needle_dq = format!("id=\"method.{method_name}\"");
+    let needle_sq = format!("id='method.{method_name}'");
+    if !html.contains(&needle_dq) && !html.contains(&needle_sq) {
+        return extract_item_markdown_from_html(html);
+    }
+    // Prefer a section/details/div that wraps the method id when scrapable.
+    let document = Html::parse_document(html);
+    // Attribute selectors with dots need care; use main-content fallback.
+    if let Ok(sel) = Selector::parse("#main-content") {
+        if let Some(main) = document.select(&sel).next() {
+            let frag = main.html();
+            if frag.contains(&needle_dq) || frag.contains(&needle_sq) {
+                let md = html_to_markdown(&frag)?;
+                let empty = md.trim().is_empty();
+                return Ok((md, empty));
+            }
+        }
+    }
+    extract_item_markdown_from_html(html)
+}
+
+/// Build SearchInCrateData from HTML body without network (offline tests).
 /// Build SearchInCrateData from HTML body without network (offline tests).
 ///
 /// `--limit 0` is honoured: `emitted = 0`, `hits = []`, and `truncated` is true
@@ -899,6 +1198,7 @@ pub fn extract_item_markdown_from_html(html: &str) -> AppResult<(String, bool)> 
 /// # Errors
 ///
 /// Propagates parse failures from [`parse_all_html_hits`].
+#[allow(clippy::too_many_arguments)]
 pub fn search_in_crate_from_html(
     html: &str,
     crate_name: &str,
@@ -906,25 +1206,48 @@ pub fn search_in_crate_from_html(
     query: &str,
     item_type: Option<ItemKind>,
     limit: u32,
+    match_mode: MatchMode,
     source_url: &str,
+    cache_hit: bool,
 ) -> AppResult<SearchInCrateData> {
     let limit = (limit as usize).min(MAX_SEARCH_IN_CRATE_LIMIT as usize);
-    let all = parse_all_html_hits(html, crate_name, version, query, item_type, usize::MAX)?;
+    let all = parse_all_html_hits(
+        html,
+        crate_name,
+        version,
+        query,
+        item_type,
+        usize::MAX,
+        match_mode,
+    )?;
     let total = all.len();
     let hits: Vec<_> = all.into_iter().take(limit).collect();
     let emitted = hits.len();
+    // Empty query: scores are 0 — omit score noise on wire for cleaner lists.
+    let hits = if query.trim().is_empty() {
+        hits.into_iter()
+            .map(|mut h| {
+                h.score = None;
+                h
+            })
+            .collect()
+    } else {
+        hits
+    };
     Ok(SearchInCrateData {
         crate_name: crate_name.to_string(),
         query: query.to_string(),
         version: version.to_string(),
+        item_type: item_type.map(|k| k.as_str().to_string()),
+        match_mode: match_mode.as_str().to_string(),
         total,
         emitted,
         hits,
         truncated: total > emitted,
         source_url: source_url.to_string(),
+        cache_hit,
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,7 +1347,7 @@ mod tests {
           <a href="attr.x.html">x</a>
           <a href="derive.D.html">D</a>
         </div></body></html>"#;
-        let hits = parse_all_html_hits(html, "demo", "1.0.0", "", None, 100).unwrap();
+        let hits = parse_all_html_hits(html, "demo", "1.0.0", "", None, 100, crate::domain::MatchMode::Prefix).unwrap();
         assert_eq!(hits.len(), 6);
         assert_eq!(hits[0].name, "A");
         assert_eq!(hits[0].kind, "struct");
@@ -1084,7 +1407,9 @@ mod tests {
             "",
             Some(ItemKind::Struct),
             1,
+            MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
+        false,
         )
         .unwrap();
         assert_eq!(data.total, 1);
@@ -1103,7 +1428,9 @@ mod tests {
             "",
             None,
             2,
+            MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
+        false,
         )
         .unwrap();
         assert!(data.total > 2, "fixture must have more than 2 hits");
@@ -1116,7 +1443,9 @@ mod tests {
             "",
             None,
             1000,
+            MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
+        false,
         )
         .unwrap();
         assert_eq!(full.total, full.emitted);
@@ -1133,17 +1462,55 @@ mod tests {
             "",
             None,
             0,
+            MatchMode::Prefix,
             "https://docs.rs/demo/1.0.0/demo/all.html",
+        false,
         )
         .unwrap();
         assert!(data.total > 0, "fixture must have hits for total");
         assert_eq!(data.emitted, 0);
         assert!(data.hits.is_empty());
         assert!(data.truncated);
+    }
+
+    #[test]
+    fn serialize_exact_match_beats_deserializer() {
+        let html = r#"<!DOCTYPE html><html><body>
+        <div id="main-content">
+          <a href="trait.Deserialize.html">Deserialize</a>
+          <a href="trait.Serialize.html">Serialize</a>
+          <a href="struct.Deserializer.html">Deserializer</a>
+        </div></body></html>"#;
+        let hits = parse_all_html_hits(
+            html,
+            "serde",
+            "1.0.0",
+            "Serialize",
+            Some(ItemKind::Trait),
+            10,
+            MatchMode::Prefix,
+        )
+        .unwrap();
+        assert_eq!(hits[0].name, "Serialize");
+        assert!(hits.iter().all(|h| h.name == "Serialize"));
+    }
+
+    #[test]
+    fn method_url_uses_anchor() {
+        let segs = vec!["runtime".into(), "Runtime".into(), "new".into()];
+        let u = get_item_url("tokio", "latest", ItemKind::Fn, &segs).unwrap();
         assert!(
-            parse_all_html_hits(html, "demo", "1.0.0", "", None, 0)
-                .unwrap()
-                .is_empty()
+            u.as_str().contains("struct.Runtime.html#method.new"),
+            "url={u}"
+        );
+    }
+
+    #[test]
+    fn stdlib_resolved_version_is_channel() {
+        let u = Url::parse("https://doc.rust-lang.org/stable/std/index.html").unwrap();
+        assert_eq!(
+            extract_resolved_version_for_crate(&u, "latest", Some("std")).as_deref(),
+            Some("stable")
         );
     }
 
@@ -1156,6 +1523,23 @@ mod tests {
         );
         let u2 = Url::parse("https://docs.rs/serde/latest/serde/index.html").unwrap();
         assert!(extract_resolved_version(&u2, "latest").is_none());
+    }
+
+    #[test]
+    fn scrape_version_prefers_target_crate_not_deps() {
+        let html = r#"
+        <title>tokio - Rust</title>
+        <a href="https://docs.rs/bytes/1.2.0/bytes/">bytes</a>
+        <a href="/tokio/1.53.0/tokio/runtime/index.html">runtime</a>
+        <a href="https://docs.rs/mio/0.8.0/mio/">mio</a>
+        "#;
+        assert_eq!(
+            scrape_docs_rs_version_from_html(html, "tokio").as_deref(),
+            Some("1.53.0")
+        );
+        // Must not pick dependency when crate path missing
+        let html2 = r#"<title>x</title><a href="https://docs.rs/bytes/1.2.0/bytes/">b</a>"#;
+        assert_eq!(scrape_docs_rs_version_from_html(html2, "tokio"), None);
     }
 
     #[test]

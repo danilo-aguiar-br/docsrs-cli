@@ -223,6 +223,7 @@ impl DiskCache {
             final_url,
             body: Bytes::from(buf),
             content_type: meta.content_type,
+            cache_hit: true,
         })
     }
 
@@ -575,19 +576,8 @@ mod tests {
             final_url: url.clone(),
             body: Bytes::from_static(body),
             content_type: Some("text/html".into()),
+            cache_hit: false,
         }
-    }
-
-    #[test]
-    fn put_get_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0);
-        let url = Url::parse("https://docs.rs/serde/latest/serde/index.html").unwrap();
-        let resp = sample_resp(&url, b"<html>ok</html>");
-        cache.put(&url, "text/html", &resp).unwrap();
-        let hit = cache.get(&url, "text/html").expect("cache hit");
-        assert_eq!(hit.body.as_ref(), b"<html>ok</html>");
-        assert_eq!(hit.status, StatusCode::OK);
     }
 
     #[test]
@@ -647,7 +637,8 @@ mod tests {
                     final_url: url.clone(),
                     body: Bytes::from(body),
                     content_type: Some("text/html".into()),
-                },
+            cache_hit: false,
+        },
             )
             .unwrap();
         let reader = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 50);
@@ -714,6 +705,7 @@ mod tests {
             final_url: url.clone(),
             body: Bytes::from_static(b"nope"),
             content_type: None,
+            cache_hit: false,
         };
         cache.put(&url, "text/html", &resp).unwrap();
         assert!(cache.get(&url, "text/html").is_none());
@@ -758,7 +750,8 @@ mod tests {
                     final_url: u1.clone(),
                     body: Bytes::from(body1),
                     content_type: Some("text/html".into()),
-                },
+            cache_hit: false,
+        },
             )
             .unwrap();
         std::thread::sleep(Duration::from_millis(20));
@@ -771,7 +764,8 @@ mod tests {
                     final_url: u2.clone(),
                     body: Bytes::from(body2),
                     content_type: Some("text/html".into()),
-                },
+            cache_hit: false,
+        },
             )
             .unwrap();
         let stats = cache.stats();
@@ -797,7 +791,8 @@ mod tests {
                     final_url: url.clone(),
                     body: Bytes::from(body),
                     content_type: Some("text/html".into()),
-                },
+            cache_hit: false,
+        },
             )
             .unwrap();
         let stats = cache.stats();

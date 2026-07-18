@@ -112,9 +112,10 @@ impl PathSource {
 /// Values are documentation only until the user uncomments. Runtime still
 /// applies defaults when keys are absent. No secrets — product is public HTTP.
 pub const DEFAULT_CONFIG_TOML: &str = r#"# docsrs-cli XDG configuration
-# Precedence: CLI flags > environment allowlist > this file > built-in defaults.
-# Path: $XDG_CONFIG_HOME/docsrs-cli/config.toml (or platform equivalent).
+# Precedence: CLI flags > this file (XDG) > built-in defaults.
+# Path: /docsrs-cli/config.toml (or platform equivalent).
 # No .env file is required after cargo install. Product stores no API keys.
+# Product settings are NOT read from DOCSRS_CLI_* environment variables.
 #
 # timeout_secs = 30
 # connect_timeout_secs = 10
@@ -127,8 +128,8 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"# docsrs-cli XDG configuration
 # disable_retry = false
 # rate_limit_delay_ms = 1000
 # max_concurrency = 0
-# user_agent = "docsrs-cli/0.1.0 (+https://github.com/docsrs-cli/docsrs-cli)"
-# contact = "you@example.com"
+# user_agent = "docsrs-cli/1.1.0 (+https://github.com/danilo-aguiar-br/docsrs-cli)"
+# contact = "https://github.com/danilo-aguiar-br/docsrs-cli"
 # lang = "en"
 # crates_io_origin = "https://crates.io"
 # docs_rs_origin = "https://docs.rs"
@@ -194,7 +195,8 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let contact = std::env::var("DOCSRS_CLI_CONTACT").ok();
+        // Contact comes from TOML `contact` or CLI `--user-agent`, not process env.
+        let contact: Option<String> = None;
         let ua = default_user_agent(contact.as_deref());
         Self {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
@@ -235,7 +237,9 @@ pub fn default_user_agent(contact: Option<&str>) -> String {
                 format!("{APP_NAME}/{APP_VERSION} ({c})")
             }
         }
-        _ => format!("{APP_NAME}/{APP_VERSION} (+https://github.com/docsrs-cli/docsrs-cli)"),
+        _ => format!(
+            "{APP_NAME}/{APP_VERSION} (+https://github.com/danilo-aguiar-br/docsrs-cli)"
+        ),
     }
 }
 
@@ -409,106 +413,12 @@ impl Config {
         }
     }
 
+    /// Resolve cache path when still unset (XDG / test sandbox).
+    ///
+    /// Product knobs are **not** read from `DOCSRS_CLI_*` environment variables
+    /// (flags + XDG TOML only). Path sandbox `DOCSRS_CLI_HOME` remains available
+    /// for tests via [`crate::cache::resolve_cache_dir_with_source`].
     fn apply_env(&mut self) -> AppResult<()> {
-        if let Ok(v) = std::env::var("DOCSRS_CLI_TIMEOUT_SECS") {
-            self.timeout_secs = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_TIMEOUT_SECS must be a positive integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_MAX_BODY_BYTES") {
-            self.max_body_bytes = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_MAX_BODY_BYTES must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_MAX_OUTPUT_BYTES") {
-            self.max_output_bytes = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_MAX_OUTPUT_BYTES must be a positive integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_MAX_CONCURRENCY") {
-            self.max_concurrency = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_MAX_CONCURRENCY must be a non-negative integer (0 = auto)",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_MAX_RETRIES") {
-            self.max_retries = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_MAX_RETRIES must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_RETRY_BASE_MS") {
-            self.retry_base_ms = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_RETRY_BASE_MS must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_RETRY_MAX_DELAY_MS") {
-            self.retry_max_delay_ms = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_RETRY_MAX_DELAY_MS must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_DISABLE_RETRY") {
-            let low = v.to_ascii_lowercase();
-            self.disable_retry = matches!(low.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_USER_AGENT") {
-            self.user_agent = v;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_CONTACT") {
-            self.contact = Some(v.clone());
-            if std::env::var("DOCSRS_CLI_USER_AGENT").is_err() {
-                self.user_agent = default_user_agent(Some(&v));
-            }
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_LANG") {
-            self.lang = Some(v);
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_CRATES_IO_ORIGIN") {
-            self.crates_io_origin = normalize_origin(&v);
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_DOCS_RS_ORIGIN") {
-            self.docs_rs_origin = normalize_origin(&v);
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_CACHE_TTL_SECS") {
-            self.cache_ttl_secs = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_CACHE_TTL_SECS must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_MAX_CACHE_BYTES") {
-            self.max_cache_bytes = v.parse().map_err(|_| {
-                AppError::new(
-                    ErrorKind::Config,
-                    "DOCSRS_CLI_MAX_CACHE_BYTES must be a non-negative integer",
-                )
-            })?;
-        }
-        if let Ok(v) = std::env::var("DOCSRS_CLI_NO_CACHE") {
-            let low = v.to_ascii_lowercase();
-            self.no_cache = matches!(low.as_str(), "1" | "true" | "yes" | "on");
-        }
-        // Env cache dir / home wins over XDG when not already pinned by CLI override.
         if self.cache_dir.is_none() {
             let (dir, source) = crate::cache::resolve_cache_dir_with_source(None);
             self.cache_dir = dir;

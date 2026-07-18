@@ -3,11 +3,28 @@
   "title": "docsrs-cli search-crates success data",
   "type": "object",
   "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms. Optional hit/meta fields are omitted when absent (skip_serializing_if / not serialized as null).",
-  "required": ["query", "page", "per_page", "sort", "hits", "meta"],
+  "required": [
+    "query",
+    "page",
+    "per_page",
+    "sort",
+    "hits",
+    "meta",
+    "cache_hit"
+  ],
   "properties": {
-    "query": { "type": "string" },
-    "page": { "type": "integer", "minimum": 1 },
-    "per_page": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "query": {
+      "type": "string"
+    },
+    "page": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
     "sort": {
       "type": "string",
       "enum": [
@@ -23,12 +40,26 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "description", "downloads", "version"],
+        "required": [
+          "name",
+          "description",
+          "downloads",
+          "version"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "downloads": { "type": "integer", "minimum": 0 },
-          "version": { "type": "string" },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "downloads": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string"
+          },
           "documentation": {
             "type": "string",
             "description": "Omitted when absent (never JSON null)"
@@ -72,9 +103,14 @@
     },
     "meta": {
       "type": "object",
-      "required": ["total"],
+      "required": [
+        "total"
+      ],
       "properties": {
-        "total": { "type": "integer", "minimum": 0 },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
         "next_page": {
           "type": "string",
           "description": "Omitted when absent (never JSON null)"
@@ -85,6 +121,10 @@
         }
       },
       "additionalProperties": false
+    },
+    "cache_hit": {
+      "type": "boolean",
+      "description": "True when the HTTP response body was served from the local disk cache"
     }
   },
   "additionalProperties": false

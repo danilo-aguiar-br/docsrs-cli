@@ -5,11 +5,24 @@
     {
       "title": "cache-clear",
       "type": "object",
-      "required": ["root", "removed_entries", "freed_bytes"],
+      "required": [
+        "root",
+        "removed_entries",
+        "freed_bytes"
+      ],
+      "additionalProperties": false,
       "properties": {
-        "root": { "type": "string" },
-        "removed_entries": { "type": "integer", "minimum": 0 },
-        "freed_bytes": { "type": "integer", "minimum": 0 }
+        "root": {
+          "type": "string"
+        },
+        "removed_entries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     {
@@ -24,18 +37,34 @@
         "ttl_secs",
         "parser_version"
       ],
+      "additionalProperties": false,
       "properties": {
-        "root": { "type": "string" },
-        "layout": { "type": "string" },
-        "entries": { "type": "integer", "minimum": 0 },
-        "total_bytes": { "type": "integer", "minimum": 0 },
+        "root": {
+          "type": "string"
+        },
+        "layout": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
         "max_bytes": {
           "type": "integer",
           "minimum": 0,
           "description": "0 means unlimited"
         },
-        "ttl_secs": { "type": "integer", "minimum": 0 },
-        "parser_version": { "type": "string" }
+        "ttl_secs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parser_version": {
+          "type": "string"
+        }
       }
     }
   ]

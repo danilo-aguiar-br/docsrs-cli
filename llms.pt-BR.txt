@@ -1,24 +1,32 @@
 # docsrs-cli
-
 > CLI one-shot stdin/stdout para documentação do crates.io e docs.rs para agentes LLM.
 
-docsrs-cli é um binário born-execute-finalize-die que busca crates, busca overviews README e itens rustdoc tipados, e emite envelopes JSON estáveis no stdout com diagnósticos apenas no stderr.
+docsrs-cli é um binário born-execute-finalize-die que busca crates, busca overviews README e itens rustdoc tipados, e emite envelopes JSON estáveis no stdout com diagnósticos apenas no stderr. A linha atual de release é 1.1.x com match modes `--match`, `--page-token`, `--suggest`, `doctor --online` e `data.cache_hit`.
 
 ## Documentação Primária
-
 - [README](README.pt-BR.md): landing page, install, comandos, variáveis de ambiente
 - [Como usar](docs/HOW_TO_USE.pt-BR.md): primeiro comando em 60 segundos
 - [Agentes](docs/AGENTS.pt-BR.md): contrato de integração e economia para agentes
 - [Cookbook](docs/COOKBOOK.pt-BR.md): receitas executáveis
 - [Multiplataforma](docs/CROSS_PLATFORM.pt-BR.md): matriz de SO e paths XDG
-- [Migração](docs/MIGRATION.pt-BR.md): notas de migração entre versões
+- [Migração](docs/MIGRATION.pt-BR.md): notas de migração 0.1.x para 1.1.0
 - [Testes](docs/TESTING.pt-BR.md): como rodar testes categorizados
 - [JSON schemas](docs/schemas/README.md): contratos de payload legíveis por máquina
 - [Integrações](INTEGRATIONS.pt-BR.md): agentes, shells e superfícies de CI
-- [Changelog](CHANGELOG.pt-BR.md): histórico Keep a Changelog
+- [Changelog](CHANGELOG.pt-BR.md): histórico Keep a Changelog incluindo 1.1.0
 - [Segurança](SECURITY.pt-BR.md): reporte de vulnerabilidades
 - [Contribuindo](CONTRIBUTING.pt-BR.md): fluxo do contribuidor
 - [Skill em inglês](skills/docsrs-cli-en/SKILL.md): runbook imperativo para agentes
 - [Skill em português](skills/docsrs-cli-pt/SKILL.md): runbook em português
 - [Índice completo](llms-full.txt): mapa expandido de documentação
 - [Descoberta em inglês](llms.txt): short discovery document
+
+## Opcional
+- [schema get-item](docs/schemas/get-item.schema.json): item_name, resolved_version, cache_hit
+- [schema search-in-crate](docs/schemas/search-in-crate.schema.json): match_mode, score, cache_hit
+- [schema search-crates](docs/schemas/search-crates.schema.json): page tokens e cache_hit
+- [schema readme](docs/schemas/readme.schema.json): resolved_version e cache_hit
+- [schema meta](docs/schemas/schema.schema.json): payload do documento schema embutido
+- [schema completions](docs/schemas/completions.schema.json): shell + script no modo JSON
+- [schema error](docs/schemas/error.schema.json): envelope de erro top-level
+- [schema dry-run](docs/schemas/dry-run.schema.json): planned_url e planned_params.crate_name
