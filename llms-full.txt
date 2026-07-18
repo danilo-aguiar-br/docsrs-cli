@@ -1,0 +1,52 @@
+# docsrs-cli
+
+> One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
+
+docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY.
+
+## Primary Documentation
+
+- [README](README.md): landing page with install, commands, env, FAQ
+- [README pt-BR](README.pt-BR.md): Portuguese landing page
+- [How to use](docs/HOW_TO_USE.md): install to first success in 60 seconds
+- [How to use pt-BR](docs/HOW_TO_USE.pt-BR.md): guia pedagógico em português
+- [Agents](docs/AGENTS.md): hybrid persuasive plus imperative agent guide
+- [Agents pt-BR](docs/AGENTS.pt-BR.md): guia de agentes em português
+- [Cookbook](docs/COOKBOOK.md): practical executable recipes
+- [Cookbook pt-BR](docs/COOKBOOK.pt-BR.md): receitas em português
+- [Cross platform](docs/CROSS_PLATFORM.md): Linux macOS Windows matrix
+- [Cross platform pt-BR](docs/CROSS_PLATFORM.pt-BR.md): matriz multiplataforma
+- [Migration](docs/MIGRATION.md): migration and compatibility notes
+- [Migration pt-BR](docs/MIGRATION.pt-BR.md): notas de migração
+- [Testing](docs/TESTING.md): test categories and how to run
+- [Testing pt-BR](docs/TESTING.pt-BR.md): guia de testes
+- [JSON schemas index](docs/schemas/README.md): schema inventory
+- [get-item schema](docs/schemas/get-item.schema.json)
+- [readme schema](docs/schemas/readme.schema.json)
+- [search-crates schema](docs/schemas/search-crates.schema.json)
+- [search-in-crate schema](docs/schemas/search-in-crate.schema.json)
+- [commands schema](docs/schemas/commands.schema.json)
+- [doctor schema](docs/schemas/doctor.schema.json)
+- [version schema](docs/schemas/version.schema.json)
+- [cache schema](docs/schemas/cache.schema.json)
+- [config schema](docs/schemas/config.schema.json)
+- [Integrations](INTEGRATIONS.md): agent and platform catalog
+- [Integrations pt-BR](INTEGRATIONS.pt-BR.md)
+- [Changelog](CHANGELOG.md)
+- [Changelog pt-BR](CHANGELOG.pt-BR.md)
+- [Security](SECURITY.md)
+- [Security pt-BR](SECURITY.pt-BR.md)
+- [Contributing](CONTRIBUTING.md)
+- [Contributing pt-BR](CONTRIBUTING.pt-BR.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Code of Conduct pt-BR](CODE_OF_CONDUCT.pt-BR.md)
+- [English skill](skills/docsrs-cli-en/SKILL.md)
+- [Portuguese skill](skills/docsrs-cli-pt/SKILL.md)
+- [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md)
+- [Error model ADR](docs/decisions/0002-error-model.md)
+- [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md)
+
+## Optional
+
+- [llms.txt](llms.txt): short discovery document
+- [llms.pt-BR.txt](llms.pt-BR.txt): Portuguese discovery document

@@ -6,9 +6,14 @@
 //!
 //! Budget: optional `max_bytes` evicts oldest entries after each successful put.
 //! `ttl == 0` means entries never hit (always re-fetch).
+//!
+//! Poisoned-entry guards: body reads are capped by [`HARD_MAX_BODY_BYTES`] (and the
+//! cache soft budget); meta JSON reads are capped by [`MAX_CACHE_META_BYTES`]. Both
+//! paths use fallible `try_reserve_exact` before filling buffers (never unbounded
+//! `fs::read` / `fs::read_to_string` on attacker-controlled sizes).
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
+use crate::config::HARD_MAX_BODY_BYTES;
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::http::HttpResponse;
 
@@ -27,6 +33,11 @@ pub const CACHE_PARSER_VERSION: &str = "1";
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 86_400;
 /// Default on-disk budget (256 MiB). `0` means unlimited.
 pub const DEFAULT_MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+/// Hard ceiling for on-disk cache meta JSON (poisoned-entry guard).
+///
+/// Legitimate `CacheMeta` is a few hundred bytes (URLs + digests). A multi-KiB
+/// ceiling leaves headroom while blocking multi-GiB `read_to_string` aborts.
+pub const MAX_CACHE_META_BYTES: u64 = 64 * 1024;
 /// On-disk layout version under the cache root.
 const CACHE_LAYOUT: &str = "http/v1";
 
@@ -42,20 +53,30 @@ pub struct DiskCache {
 /// Aggregate cache inventory for `cache stats` / doctor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheStats {
+    /// Absolute cache root path.
     pub root: String,
+    /// On-disk layout subdirectory (for example `http/v1`).
     pub layout: String,
+    /// Number of complete cache entries (meta+body pairs).
     pub entries: u64,
+    /// Total bytes used by meta and body files.
     pub total_bytes: u64,
+    /// Configured soft budget (`0` = unlimited).
     pub max_bytes: u64,
+    /// Configured TTL in seconds.
     pub ttl_secs: u64,
+    /// Parser version used for cache keys.
     pub parser_version: String,
 }
 
 /// Result of `cache clear`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheClearResult {
+    /// Absolute cache root path that was cleared.
     pub root: String,
+    /// Number of entries removed.
     pub removed_entries: u64,
+    /// Bytes reclaimed from deleted files.
     pub freed_bytes: u64,
 }
 
@@ -90,14 +111,17 @@ impl DiskCache {
         }
     }
 
+    /// Absolute cache root directory.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Configured entry time-to-live.
     pub fn ttl(&self) -> Duration {
         self.ttl
     }
 
+    /// Soft size budget in bytes (`0` = unlimited).
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes
     }
@@ -126,8 +150,10 @@ impl DiskCache {
         if !meta_path.is_file() || !body_path.is_file() {
             return None;
         }
-        let meta_text = fs::read_to_string(&meta_path).ok()?;
-        let meta: CacheMeta = serde_json::from_str(&meta_text).ok()?;
+        let Some(meta) = read_meta_file(&meta_path) else {
+            debug!(%key, "cache miss: meta unreadable or over cap");
+            return None;
+        };
         if meta.parser_version != CACHE_PARSER_VERSION {
             debug!(%key, "cache miss: parser version mismatch");
             let _ = self.remove_entry(&key);
@@ -149,8 +175,41 @@ impl DiskCache {
             let _ = self.remove_entry(&key);
             return None;
         }
-        let body = fs::read(&body_path).ok()?;
-        let body_sha = sha256_hex(&body);
+        // Refuse oversized on-disk bodies before allocating (OOM / corrupt entry guard).
+        // Cap is the min of cache budget (or default soft budget when unlimited) and the
+        // product hard body ceiling — a poisoned cache cannot force multi-GiB or
+        // above-HARD_MAX_BODY_BYTES reads even if max_cache_bytes is 0/unlimited.
+        let body_len = fs::metadata(&body_path).ok()?.len();
+        let budget = if self.max_bytes > 0 {
+            self.max_bytes
+        } else {
+            DEFAULT_MAX_CACHE_BYTES
+        };
+        let read_cap = budget.min(HARD_MAX_BODY_BYTES);
+        if body_len > read_cap {
+            debug!(%key, body_len, read_cap, "cache miss: body exceeds read budget");
+            let _ = self.remove_entry(&key);
+            return None;
+        }
+        // Fallible reserve before reading: size is already capped by HARD_MAX_BODY_BYTES,
+        // but try_reserve_exact avoids with_capacity/fs::read abort paths on OOM.
+        // On reserve or I/O failure treat as miss (best-effort cache).
+        // body_len <= HARD_MAX_BODY_BYTES (10 MiB) always fits usize on supported targets.
+        let n = usize::try_from(body_len).ok()?;
+        let mut buf = Vec::new();
+        if let Err(e) = buf.try_reserve_exact(n) {
+            debug!(%key, body_len, error = %e, "cache miss: failed to reserve body buffer");
+            return None;
+        }
+        buf.resize(n, 0);
+        {
+            let mut file = fs::File::open(&body_path).ok()?;
+            if file.read_exact(&mut buf).is_err() {
+                debug!(%key, "cache miss: body read failed");
+                return None;
+            }
+        }
+        let body_sha = sha256_hex(&buf);
         if body_sha != meta.body_sha256 {
             debug!(%key, "cache miss: body checksum mismatch");
             let _ = self.remove_entry(&key);
@@ -162,14 +221,29 @@ impl DiskCache {
         Some(HttpResponse {
             status,
             final_url,
-            body: Bytes::from(body),
+            body: Bytes::from(buf),
             content_type: meta.content_type,
         })
     }
 
     /// Persist a successful response. Best-effort; failures are non-fatal at call sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::Internal`] on filesystem create/write/rename failures or
+    /// when cache metadata cannot be serialized.
     pub fn put(&self, url: &Url, accept: &str, resp: &HttpResponse) -> AppResult<()> {
         if !resp.status.is_success() {
+            return Ok(());
+        }
+        // Soft budget: never store a single body that already exceeds the cap.
+        // (A just-written entry is never self-evicted, so oversized puts would stick forever.)
+        if self.max_bytes > 0 && (resp.body.len() as u64) > self.max_bytes {
+            debug!(
+                body = resp.body.len(),
+                max = self.max_bytes,
+                "cache skip: body exceeds max_bytes"
+            );
             return Ok(());
         }
         let dir = self.entry_dir();
@@ -180,6 +254,7 @@ impl DiskCache {
                 e,
             )
         })?;
+        crate::platform::restrict_private_dir(&dir);
         let key = key_hex(url.as_str(), CACHE_PARSER_VERSION, accept);
         let input_sha = input_checksum(url.as_str(), CACHE_PARSER_VERSION, accept);
         let body_sha = sha256_hex(resp.body.as_ref());
@@ -198,8 +273,32 @@ impl DiskCache {
         let meta_tmp = meta_path.with_extension("meta.json.tmp");
         let body_tmp = body_path.with_extension("bin.tmp");
 
+        // RAII: remove temps on any early return / panic; disarmed after successful renames.
+        struct TempCleanup {
+            paths: [PathBuf; 2],
+            armed: bool,
+        }
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                for p in &self.paths {
+                    if p.as_os_str().is_empty() {
+                        continue;
+                    }
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+        // Move temps into RAII guard — no PathBuf clone; create/rename borrow `temps.paths`.
+        let mut temps = TempCleanup {
+            paths: [body_tmp, meta_tmp],
+            armed: true,
+        };
+
         {
-            let mut f = fs::File::create(&body_tmp).map_err(|e| {
+            let mut f = fs::File::create(&temps.paths[0]).map_err(|e| {
                 AppError::with_source(ErrorKind::Internal, "cache body temp create", e)
             })?;
             f.write_all(resp.body.as_ref())
@@ -208,10 +307,11 @@ impl DiskCache {
                 .map_err(|e| AppError::with_source(ErrorKind::Internal, "cache body sync", e))?;
         }
         {
-            let text = serde_json::to_string_pretty(&meta).map_err(|e| {
+            // Compact JSON (RFC 8259) for machine meta — pretty is only for human markdown paths.
+            let text = serde_json::to_string(&meta).map_err(|e| {
                 AppError::with_source(ErrorKind::Internal, "cache meta serialize", e)
             })?;
-            let mut f = fs::File::create(&meta_tmp).map_err(|e| {
+            let mut f = fs::File::create(&temps.paths[1]).map_err(|e| {
                 AppError::with_source(ErrorKind::Internal, "cache meta temp create", e)
             })?;
             f.write_all(text.as_bytes())
@@ -220,16 +320,27 @@ impl DiskCache {
                 .map_err(|e| AppError::with_source(ErrorKind::Internal, "cache meta sync", e))?;
         }
 
-        fs::rename(&body_tmp, &body_path)
+        fs::rename(&temps.paths[0], &body_path)
             .map_err(|e| AppError::with_source(ErrorKind::Internal, "cache body rename", e))?;
-        fs::rename(&meta_tmp, &meta_path)
-            .map_err(|e| AppError::with_source(ErrorKind::Internal, "cache meta rename", e))?;
+        crate::platform::restrict_private_file(&body_path);
+        // body temp is gone; only meta temp remains if the next rename fails.
+        temps.paths[0] = PathBuf::new();
+        fs::rename(&temps.paths[1], &meta_path).map_err(|e| {
+            // Best-effort: body already renamed; leave it for next put or eviction.
+            AppError::with_source(ErrorKind::Internal, "cache meta rename", e)
+        })?;
+        crate::platform::restrict_private_file(&meta_path);
+        temps.armed = false;
         debug!(%key, "cache store");
         self.enforce_max_bytes(Some(&key));
         Ok(())
     }
 
     /// Remove every entry under `http/v1` (temps included).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::Internal`] when the cache directory cannot be read.
     pub fn clear(&self) -> AppResult<CacheClearResult> {
         let dir = self.entry_dir();
         let mut removed_entries = 0u64;
@@ -299,9 +410,9 @@ impl DiskCache {
             }
             let meta_len = fs::metadata(&meta_path).map(|m| m.len()).unwrap_or(0);
             let body_len = fs::metadata(&body_path).map(|m| m.len()).unwrap_or(0);
-            let stored_at = fs::read_to_string(&meta_path)
-                .ok()
-                .and_then(|t| serde_json::from_str::<CacheMeta>(&t).ok())
+            // Cap + fallible read (same helper as get): poisoned meta must not
+            // force unbounded allocation during stats/evict scans.
+            let stored_at = read_meta_file(&meta_path)
                 .map(|m| m.stored_at_unix)
                 .unwrap_or(0);
             out.push(EntryOnDisk {
@@ -347,18 +458,77 @@ impl DiskCache {
     }
 }
 
-/// Resolve cache root: explicit override, env, then XDG cache home.
+/// Resolve cache root: override, env, `DOCSRS_CLI_HOME/cache`, then XDG cache home.
+///
+/// Precedence:
+/// 1. Explicit override (`--cache-dir` / caller)
+/// 2. `DOCSRS_CLI_CACHE_DIR`
+/// 3. `{DOCSRS_CLI_HOME}/cache` when `DOCSRS_CLI_HOME` is set
+/// 4. `directories::ProjectDirs` cache dir
 pub fn resolve_cache_dir(override_dir: Option<PathBuf>) -> Option<PathBuf> {
-    override_dir
-        .or_else(|| std::env::var_os("DOCSRS_CLI_CACHE_DIR").map(PathBuf::from))
-        .or_else(|| {
-            directories::ProjectDirs::from("", "", crate::config::APP_NAME)
-                .map(|p| p.cache_dir().to_path_buf())
-        })
+    resolve_cache_dir_with_source(override_dir).0
+}
+
+/// Resolve cache root and report which layer won.
+pub fn resolve_cache_dir_with_source(
+    override_dir: Option<PathBuf>,
+) -> (Option<PathBuf>, crate::config::PathSource) {
+    use crate::config::PathSource;
+    if let Some(p) = override_dir {
+        return (Some(p), PathSource::CliOrEnv);
+    }
+    if let Some(p) = std::env::var_os("DOCSRS_CLI_CACHE_DIR") {
+        return (Some(PathBuf::from(p)), PathSource::CliOrEnv);
+    }
+    if let Some(h) = std::env::var_os("DOCSRS_CLI_HOME") {
+        return (Some(PathBuf::from(h).join("cache")), PathSource::HomeSandbox);
+    }
+    if let Some(p) = directories::ProjectDirs::from("", "", crate::config::APP_NAME)
+        .map(|d| d.cache_dir().to_path_buf())
+    {
+        return (Some(p), PathSource::Xdg);
+    }
+    (None, PathSource::Unresolved)
 }
 
 fn key_hex(url: &str, parser_version: &str, accept: &str) -> String {
     input_checksum(url, parser_version, accept)
+}
+
+/// Read and parse a cache meta file with a hard size ceiling and fallible reserve.
+///
+/// Returns `None` on missing file, oversize, OOM reserve, I/O error, or JSON parse
+/// failure (best-effort cache semantics — treat as miss).
+fn read_meta_file(path: &Path) -> Option<CacheMeta> {
+    let len = fs::metadata(path).ok()?.len();
+    if len > MAX_CACHE_META_BYTES {
+        debug!(
+            path = %path.display(),
+            len,
+            cap = MAX_CACHE_META_BYTES,
+            "cache meta exceeds cap"
+        );
+        return None;
+    }
+    let n = usize::try_from(len).ok()?;
+    let mut buf = Vec::new();
+    if let Err(e) = buf.try_reserve_exact(n) {
+        debug!(
+            path = %path.display(),
+            len,
+            error = %e,
+            "cache meta reserve failed"
+        );
+        return None;
+    }
+    buf.resize(n, 0);
+    {
+        let mut file = fs::File::open(path).ok()?;
+        if file.read_exact(&mut buf).is_err() {
+            return None;
+        }
+    }
+    serde_json::from_slice(&buf).ok()
 }
 
 fn input_checksum(url: &str, parser_version: &str, accept: &str) -> String {
@@ -461,6 +631,70 @@ mod tests {
     }
 
     #[test]
+    fn get_refuses_body_over_max_bytes() {
+        // Write with unlimited budget, then read with a tight max_bytes so get
+        // rejects before allocating the oversized body.
+        let dir = tempfile::tempdir().unwrap();
+        let writer = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0);
+        let url = Url::parse("https://docs.rs/big/1/big/index.html").unwrap();
+        let body = vec![b'z'; 200];
+        writer
+            .put(
+                &url,
+                "text/html",
+                &HttpResponse {
+                    status: StatusCode::OK,
+                    final_url: url.clone(),
+                    body: Bytes::from(body),
+                    content_type: Some("text/html".into()),
+                },
+            )
+            .unwrap();
+        let reader = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 50);
+        assert!(reader.get(&url, "text/html").is_none());
+    }
+
+    #[test]
+    fn get_refuses_body_over_hard_max_even_when_budget_unlimited() {
+        // Poison the cache with a body larger than HARD_MAX_BODY_BYTES while
+        // max_bytes=0 (unlimited). get must still refuse before fs::read.
+        use crate::config::HARD_MAX_BODY_BYTES;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0);
+        let url = Url::parse("https://docs.rs/poison/1/p/index.html").unwrap();
+        let tiny = sample_resp(&url, b"ok");
+        cache.put(&url, "text/html", &tiny).unwrap();
+        let key = key_hex(url.as_str(), CACHE_PARSER_VERSION, "text/html");
+        let (meta_path, body_path) = cache.paths_for_key(&key);
+        // Overwrite body with oversized payload; keep meta checksum wrong so we
+        // would fail checksum if we ever read — but size guard must fire first.
+        let over = (HARD_MAX_BODY_BYTES as usize).saturating_add(1);
+        fs::write(&body_path, vec![b'P'; over]).unwrap();
+        assert!(meta_path.is_file());
+        assert!(cache.get(&url, "text/html").is_none());
+    }
+
+    #[test]
+    fn get_refuses_meta_over_cap() {
+        // Poison meta with a payload larger than MAX_CACHE_META_BYTES; get must
+        // miss without unbounded read_to_string.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0);
+        let url = Url::parse("https://docs.rs/poison-meta/1/p/index.html").unwrap();
+        let tiny = sample_resp(&url, b"ok");
+        cache.put(&url, "text/html", &tiny).unwrap();
+        let key = key_hex(url.as_str(), CACHE_PARSER_VERSION, "text/html");
+        let (meta_path, _body_path) = cache.paths_for_key(&key);
+        let over = (MAX_CACHE_META_BYTES as usize).saturating_add(1);
+        fs::write(&meta_path, vec![b'{'; over]).unwrap();
+        assert!(meta_path.is_file());
+        assert!(cache.get(&url, "text/html").is_none());
+        // stats/evict scan must also tolerate poisoned meta (no panic/OOM path).
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[test]
     fn input_checksum_stable() {
         let a = input_checksum("https://docs.rs/a", "1", "text/html");
         let b = input_checksum("https://docs.rs/a", "1", "text/html");
@@ -546,5 +780,29 @@ mod tests {
         // Newest entry is preserved; oldest was evicted for budget.
         assert!(cache.get(&u2, "text/html").is_some());
         assert!(cache.get(&u1, "text/html").is_none());
+    }
+
+    #[test]
+    fn max_bytes_skips_body_larger_than_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 100);
+        let url = Url::parse("https://docs.rs/big/1/big/index.html").unwrap();
+        let body = vec![b'z'; 500];
+        cache
+            .put(
+                &url,
+                "text/html",
+                &HttpResponse {
+                    status: StatusCode::OK,
+                    final_url: url.clone(),
+                    body: Bytes::from(body),
+                    content_type: Some("text/html".into()),
+                },
+            )
+            .unwrap();
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 0, "stats={stats:?}");
+        assert_eq!(stats.total_bytes, 0, "stats={stats:?}");
+        assert!(cache.get(&url, "text/html").is_none());
     }
 }

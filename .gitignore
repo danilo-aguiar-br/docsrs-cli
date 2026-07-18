@@ -2,9 +2,9 @@
 # Gerado para ignorar TODAS as pastas e arquivos existentes
 # .gitignore e .cargoignore espelham o mesmo conjunto
 
-# === Raiz — arquivos ===
-AGENTS.md
-CLAUDE.md
+# === Raiz — arquivos (somente raiz; docs/AGENTS.md e publico) ===
+/AGENTS.md
+/CLAUDE.md
 .enrich-queue.sqlite
 .enrich-queue.sqlite-shm
 .enrich-queue.sqlite-wal
@@ -18,7 +18,6 @@ docs_prd/
 docs_rules/
 
 # === Inventario recursivo — todos os caminhos ===
-AGENTS.md
 base_conhecimento_docs-rs-mcp/
 base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/
 base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/docs/
@@ -34,7 +33,6 @@ base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/README.md
 base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/src/
 base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/src/index.ts
 base_conhecimento_docs-rs-mcp/docs-rs-mcp-main/tsconfig.json
-CLAUDE.md
 docs_prd/
 docs_prd/zzz_checklist_design.md
 docs_prd/zzz_contexto.md
@@ -160,6 +158,9 @@ graphrag.sqlite
 graphrag.sqlite-shm
 graphrag.sqlite-wal
 
+# === Artefatos locais de build (nunca versionar) ===
+/rust_out
+rust_out
 # === Artefatos futuros de build Cargo/Rust ===
 /target/
 **/target/

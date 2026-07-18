@@ -6,17 +6,29 @@ use crate::error::{AppError, AppResult, ErrorKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
+    /// Module page.
     Module,
+    /// Struct page.
     Struct,
+    /// Trait page.
     Trait,
+    /// Enum page.
     Enum,
+    /// Union page.
     Union,
+    /// Function or method page.
     Fn,
+    /// Type alias page.
     Type,
+    /// Constant page.
     Constant,
+    /// Static page.
     Static,
+    /// Macro page.
     Macro,
+    /// Attribute macro page.
     Attribute,
+    /// Derive macro page.
     Derive,
 }
 
@@ -39,7 +51,9 @@ impl ItemKind {
         }
     }
 
-    /// Filename prefix in rustdoc HTML (e.g. `struct`, `fn`, `attr`).
+    /// Filename prefix in rustdoc HTML (e.g. `struct`, `fn`, `attr`, `constant`).
+    ///
+    /// Modern rustdoc/docs.rs uses `constant.NAME.html` (not legacy `const.NAME.html`).
     pub fn file_prefix(self) -> &'static str {
         match self {
             Self::Module => "module",
@@ -49,7 +63,7 @@ impl ItemKind {
             Self::Union => "union",
             Self::Fn => "fn",
             Self::Type => "type",
-            Self::Constant => "const",
+            Self::Constant => "constant",
             Self::Static => "static",
             Self::Macro => "macro",
             Self::Attribute => "attr",
@@ -58,6 +72,10 @@ impl ItemKind {
     }
 
     /// Parse CLI / filter aliases into canonical kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] when `input` is not a known kind alias.
     pub fn parse(input: &str) -> AppResult<Self> {
         let s = input.trim().to_ascii_lowercase();
         match s.as_str() {
@@ -81,6 +99,8 @@ impl ItemKind {
     }
 
     /// Infer kind from all.html href (e.g. `struct.Name.html`, `attr.foo.html`).
+    ///
+    /// Accepts modern `constant.` and legacy `const.` prefixes for Constant.
     pub fn from_href(href: &str) -> Option<Self> {
         let file = href.rsplit('/').next().unwrap_or(href);
         let file = file.split('#').next().unwrap_or(file);
@@ -91,7 +111,8 @@ impl ItemKind {
             "fn" => Some(Self::Fn),
             "enum" => Some(Self::Enum),
             "type" => Some(Self::Type),
-            "const" => Some(Self::Constant),
+            // Modern rustdoc: constant.NAME.html; legacy: const.NAME.html
+            "constant" | "const" => Some(Self::Constant),
             "static" => Some(Self::Static),
             "macro" => Some(Self::Macro),
             "union" => Some(Self::Union),
@@ -140,5 +161,26 @@ mod tests {
             Some(ItemKind::Trait)
         );
         assert_eq!(ItemKind::from_href("unknown.html"), None);
+    }
+
+    #[test]
+    fn constant_prefix_modern_and_legacy() {
+        assert_eq!(ItemKind::file_prefix(ItemKind::Constant), "constant");
+        assert_eq!(
+            ItemKind::from_href("constant.MAX.html"),
+            Some(ItemKind::Constant)
+        );
+        assert_eq!(
+            ItemKind::from_href("constant._SC_OPEN_MAX.html"),
+            Some(ItemKind::Constant)
+        );
+        // Legacy rustdoc href still classifies as Constant.
+        assert_eq!(
+            ItemKind::from_href("const.MAX.html"),
+            Some(ItemKind::Constant)
+        );
+        assert_eq!(ItemKind::parse("const").unwrap(), ItemKind::Constant);
+        assert_eq!(ItemKind::parse("constant").unwrap(), ItemKind::Constant);
+        assert_eq!(ItemKind::Constant.as_str(), "constant");
     }
 }

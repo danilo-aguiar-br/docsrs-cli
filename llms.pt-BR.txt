@@ -1,0 +1,24 @@
+# docsrs-cli
+
+> CLI one-shot stdin/stdout para documentação do crates.io e docs.rs para agentes LLM.
+
+docsrs-cli é um binário born-execute-finalize-die que busca crates, busca overviews README e itens rustdoc tipados, e emite envelopes JSON estáveis no stdout com diagnósticos apenas no stderr.
+
+## Documentação Primária
+
+- [README](README.pt-BR.md): landing page, install, comandos, variáveis de ambiente
+- [Como usar](docs/HOW_TO_USE.pt-BR.md): primeiro comando em 60 segundos
+- [Agentes](docs/AGENTS.pt-BR.md): contrato de integração e economia para agentes
+- [Cookbook](docs/COOKBOOK.pt-BR.md): receitas executáveis
+- [Multiplataforma](docs/CROSS_PLATFORM.pt-BR.md): matriz de SO e paths XDG
+- [Migração](docs/MIGRATION.pt-BR.md): notas de migração entre versões
+- [Testes](docs/TESTING.pt-BR.md): como rodar testes categorizados
+- [JSON schemas](docs/schemas/README.md): contratos de payload legíveis por máquina
+- [Integrações](INTEGRATIONS.pt-BR.md): agentes, shells e superfícies de CI
+- [Changelog](CHANGELOG.pt-BR.md): histórico Keep a Changelog
+- [Segurança](SECURITY.pt-BR.md): reporte de vulnerabilidades
+- [Contribuindo](CONTRIBUTING.pt-BR.md): fluxo do contribuidor
+- [Skill em inglês](skills/docsrs-cli-en/SKILL.md): runbook imperativo para agentes
+- [Skill em português](skills/docsrs-cli-pt/SKILL.md): runbook em português
+- [Índice completo](llms-full.txt): mapa expandido de documentação
+- [Descoberta em inglês](llms.txt): short discovery document

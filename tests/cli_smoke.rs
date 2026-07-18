@@ -1,10 +1,12 @@
 //! Offline smoke tests for CLI surface.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn bin() -> Command {
+    // Spawns the product under test (accepted Command::new). stdin closed per native-crate rules.
     let mut c = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"));
     c.env_remove("RUST_LOG");
+    c.stdin(Stdio::null());
     c
 }
 
@@ -24,10 +26,59 @@ fn version_json() {
 
 #[test]
 fn version_text() {
-    let out = bin().args(["version"]).output().unwrap();
+    // `.output()` pipes stdout (non-TTY) so JSON is auto; force human with --format text.
+    let out = bin()
+        .args(["--format", "text", "version"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("docsrs-cli 0.1.0"));
+}
+
+#[test]
+fn version_auto_json_on_pipe() {
+    // Subprocess `.output()` is non-TTY → agent-first auto JSON without --json.
+    let out = bin().args(["version"]).output().unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["command"], "version");
+    assert_eq!(v["data"]["name"], "docsrs-cli");
+}
+
+#[test]
+fn commands_tree_json() {
+    let out = bin().args(["commands", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["command"], "commands");
+    let names: Vec<&str> = v["data"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(names.contains(&"search-crates"));
+    assert!(names.contains(&"commands"));
+    assert!(names.contains(&"schema"));
+    assert!(names.contains(&"config"));
+    let config = v["data"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "config")
+        .expect("config command");
+    let subs: Vec<&str> = config["subcommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(subs.contains(&"path"));
+    assert!(subs.contains(&"show"));
+    assert!(subs.contains(&"init"));
 }
 
 #[test]
@@ -67,6 +118,95 @@ fn dry_run_get_item_nested() {
 }
 
 #[test]
+fn dry_run_get_item_slash_path() {
+    let out = bin()
+        .args([
+            "get-item",
+            "tokio",
+            "struct",
+            "runtime/Runtime",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let url = v["data"]["planned_url"].as_str().unwrap();
+    assert!(
+        url.contains("/tokio/runtime/struct.Runtime.html"),
+        "url={url}"
+    );
+}
+
+#[test]
+fn dry_run_get_item_attr_same_as_crate_name() {
+    let out = bin()
+        .args([
+            "get-item",
+            "async-trait",
+            "attribute",
+            "async_trait",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    let url = v["data"]["planned_url"].as_str().unwrap();
+    assert!(
+        url.ends_with("/async_trait/attr.async_trait.html"),
+        "url={url}"
+    );
+}
+
+#[test]
+fn get_item_path_with_space_exit_65() {
+    let out = bin()
+        .args(["get-item", "clap", "trait", "has space", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "invalid_input");
+}
+
+#[test]
+fn doctor_missing_config_dir_fails() {
+    let out = bin()
+        .args([
+            "--config-dir",
+            "/proc/docsrs-cli-doctor-missing-xyz",
+            "--cache-dir",
+            "/tmp/docsrs-cli-doctor-cache-ok",
+            "doctor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(78),
+        "stdout={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["ok"], false);
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let config = checks
+        .iter()
+        .find(|c| c["name"] == "config_dir")
+        .expect("config_dir check");
+    assert_eq!(config["ok"], false);
+}
+
+#[test]
 fn dry_run_search_in_crate() {
     let out = bin()
         .args([
@@ -85,17 +225,43 @@ fn dry_run_search_in_crate() {
 }
 
 #[test]
-fn dry_run_std_core_alloc() {
+fn dry_run_std_core_alloc_uses_doc_rust_lang_org() {
+    // std/core/alloc are served from doc.rust-lang.org (not docs.rs).
     for crate_name in ["std", "core", "alloc"] {
         let out = bin()
             .args(["readme", crate_name, "--dry-run", "--json"])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{crate_name}");
+        assert!(
+            out.status.success(),
+            "{crate_name} stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        let url = v["data"]["planned_url"].as_str().unwrap();
-        assert!(url.contains(&format!("/{crate_name}/latest/{crate_name}/index.html")));
+        let url = v["data"]["planned_url"].as_str().unwrap_or("");
+        assert!(
+            url.contains("doc.rust-lang.org") && url.contains(crate_name),
+            "{crate_name} url={url}"
+        );
+        assert!(url.contains("/stable/"), "{crate_name} url={url}");
     }
+}
+
+#[test]
+fn schema_format_markdown_documents_fields() {
+    let out = bin()
+        .args(["schema", "--cmd", "search-crates", "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("# Schema:"), "{s}");
+    assert!(s.contains("## Required fields"), "{s}");
+    assert!(s.contains("## Properties"), "{s}");
+    assert!(s.contains("`hits`"), "{s}");
+    assert!(s.contains("`meta`"), "{s}");
+    assert!(s.contains("## JSON Schema"), "{s}");
+    assert!(s.contains("```json"), "{s}");
 }
 
 #[test]
@@ -112,14 +278,38 @@ fn json_format_conflict_exit_64() {
 
 #[test]
 fn human_error_keeps_stdout_empty() {
+    // Force human path on a pipe with --format text (auto-JSON would emit envelope).
+    let out = bin()
+        .args([
+            "--format",
+            "text",
+            "readme",
+            "serde",
+            "--crate-version",
+            "v1.0.0",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(
+        out.stdout.is_empty(),
+        "stdout must be empty on forced human path"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error:") || err.contains("erro:"));
+}
+
+#[test]
+fn auto_json_error_on_pipe() {
+    // Non-TTY without --format → JSON error envelope on stdout.
     let out = bin()
         .args(["readme", "serde", "--crate-version", "v1.0.0"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(out.stdout.is_empty(), "stdout must be empty without --json");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("error:") || err.contains("erro:"));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "invalid_input");
 }
 
 #[test]
@@ -157,6 +347,149 @@ fn doctor_ok() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["ok"], true);
+    let checks = v["data"]["checks"].as_array().unwrap();
+    for name in [
+        "config_source",
+        "config_file",
+        "cache_source",
+        "dotenv_runtime",
+        "secrets_layers",
+    ] {
+        let c = checks
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("missing doctor check {name}"));
+        assert_eq!(c["ok"], true, "check {name} detail={}", c["detail"]);
+    }
+    let dotenv = checks
+        .iter()
+        .find(|c| c["name"] == "dotenv_runtime")
+        .unwrap();
+    assert!(
+        dotenv["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no .env required"),
+        "detail={}",
+        dotenv["detail"]
+    );
+}
+
+#[test]
+fn config_path_show_init_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_dir = dir.path().join("cfg");
+    let cache_dir = dir.path().join("cache");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+
+    let path_out = bin()
+        .args([
+            "--config-dir",
+            cfg_dir.to_str().unwrap(),
+            "--cache-dir",
+            cache_dir.to_str().unwrap(),
+            "config",
+            "path",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        path_out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&path_out.stderr)
+    );
+    let path_v: serde_json::Value = serde_json::from_slice(&path_out.stdout).unwrap();
+    assert_eq!(path_v["command"], "config-path");
+    assert_eq!(path_v["data"]["config_source"], "cli-or-env");
+    assert_eq!(path_v["data"]["cache_source"], "cli-or-env");
+    assert_eq!(path_v["data"]["config_file_exists"], false);
+    assert_eq!(path_v["data"]["dotenv_runtime"], false);
+
+    let init_out = bin()
+        .args([
+            "--config-dir",
+            cfg_dir.to_str().unwrap(),
+            "config",
+            "init",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    let init_v: serde_json::Value = serde_json::from_slice(&init_out.stdout).unwrap();
+    assert_eq!(init_v["command"], "config-init");
+    assert_eq!(init_v["data"]["created"], true);
+    assert!(cfg_dir.join("config.toml").is_file());
+
+    let show_out = bin()
+        .args([
+            "--config-dir",
+            cfg_dir.to_str().unwrap(),
+            "--cache-dir",
+            cache_dir.to_str().unwrap(),
+            "config",
+            "show",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(show_out.status.success());
+    let show_v: serde_json::Value = serde_json::from_slice(&show_out.stdout).unwrap();
+    assert_eq!(show_v["command"], "config-show");
+    assert_eq!(show_v["data"]["config_toml_loaded"], true);
+    assert_eq!(show_v["data"]["config_path_source"], "cli-or-env");
+
+    let again = bin()
+        .args([
+            "--config-dir",
+            cfg_dir.to_str().unwrap(),
+            "config",
+            "init",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(78));
+}
+
+#[test]
+fn doctor_timeout_zero_uses_effective_min_one() {
+    // Config/runtime clamp timeout to min 1s; doctor must not fail solely because the raw flag is 0.
+    let out = bin()
+        .args([
+            "--timeout",
+            "0",
+            "--connect-timeout",
+            "0",
+            "doctor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["ok"], true);
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let timeouts = checks
+        .iter()
+        .find(|c| c["name"] == "timeouts")
+        .expect("timeouts check");
+    assert_eq!(timeouts["ok"], true);
+    let detail = timeouts["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("timeout=1s") && detail.contains("connect=1s"),
+        "detail={detail}"
+    );
 }
 
 #[test]
@@ -323,4 +656,112 @@ fn function_alias_dry_run() {
     assert_eq!(v["data"]["planned_params"]["item_type"], "fn");
     let url = v["data"]["planned_url"].as_str().unwrap();
     assert!(url.contains("fn.get.html"));
+}
+
+#[test]
+fn constant_item_type_uses_constant_file_prefix() {
+    let out = bin()
+        .args([
+            "get-item",
+            "libc",
+            "constant",
+            "_SC_OPEN_MAX",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["planned_params"]["item_type"], "constant");
+    let url = v["data"]["planned_url"].as_str().unwrap();
+    assert!(
+        url.contains("constant._SC_OPEN_MAX.html"),
+        "expected modern constant. prefix, url={url}"
+    );
+    assert!(
+        !url.contains("const._SC_OPEN_MAX.html"),
+        "legacy const. prefix must not be planned, url={url}"
+    );
+}
+
+#[test]
+fn const_alias_also_plans_constant_prefix() {
+    let out = bin()
+        .args(["get-item", "libc", "const", "MAX", "--dry-run", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let url = v["data"]["planned_url"].as_str().unwrap();
+    assert!(url.contains("constant.MAX.html"), "url={url}");
+}
+
+#[test]
+fn invalid_lang_fail_closed_exit_65() {
+    let out = bin()
+        .args(["--lang", "fr", "version", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "invalid_input");
+    let msg = v["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("unsupported lang"), "msg={msg}");
+}
+
+#[test]
+fn stdlib_missing_item_still_exit_66_from_doc_rust_lang_org() {
+    // Unknown item on stdlib host returns not_found (network path uses doc.rust-lang.org).
+    let out = bin()
+        .args([
+            "get-item",
+            "std",
+            "struct",
+            "ThisDoesNotExistAnywhere123",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let url = v["data"]["planned_url"].as_str().unwrap_or("");
+    assert!(url.contains("doc.rust-lang.org/stable/std/"), "url={url}");
+}
+
+#[test]
+fn completions_json_envelope() {
+    let out = bin()
+        .args(["completions", "bash", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["command"], "completions");
+    assert_eq!(v["data"]["shell"], "bash");
+    let script = v["data"]["script"].as_str().unwrap_or("");
+    assert!(!script.is_empty());
+    assert!(
+        script.contains("docsrs-cli") || script.contains("_docsrs"),
+        "script should look like bash completion"
+    );
+}
+
+#[test]
+fn schema_format_markdown_wraps_json_schema() {
+    let out = bin()
+        .args(["schema", "--cmd", "version", "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("# Schema: `version`"), "out={s}");
+    assert!(s.contains("## Required fields"), "out={s}");
+    assert!(s.contains("## JSON Schema"), "out={s}");
+    assert!(s.contains("```json"), "out={s}");
+    assert!(s.contains("```"), "out={s}");
+    assert!(s.contains("properties") || s.contains("$schema") || s.contains("{"));
 }

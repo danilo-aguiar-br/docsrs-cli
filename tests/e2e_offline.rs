@@ -8,6 +8,9 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn allow_localhost() {
+    // SAFETY: test-only process environment mutation before concurrent work.
+    // The variable is a boolean allowlist flag for wiremock localhost origins.
+    // Callers run this from single-threaded test setup, not from production code.
     unsafe {
         std::env::set_var("DOCSRS_CLI_ALLOW_LOCALHOST", "1");
     }
@@ -30,7 +33,8 @@ async fn run_with_config(
     argv.extend(args.iter().map(|s| (*s).to_string()));
     let mut out = Vec::new();
     let mut err = Vec::new();
-    let code = run_with_io(argv, Cursor::new(Vec::new()), &mut out, &mut err).await;
+    // Human markdown default for e2e helpers (simulate TTY).
+    let code = run_with_io(argv, Cursor::new(Vec::new()), &mut out, &mut err, true).await;
     (
         code,
         String::from_utf8_lossy(&out).into_owned(),
@@ -209,6 +213,28 @@ async fn e2e_search_in_crate_json_and_markdown() {
     .await;
     assert_eq!(code, ExitCode::SUCCESS);
     assert!(out.contains("Client"));
+
+    // Modern constant. prefix must filter as kind constant (not empty).
+    let (code, out, _) = run_with_config(
+        dir.path(),
+        &[
+            "search-in-crate",
+            "demo",
+            "MAX",
+            "--crate-version",
+            "1.0.0",
+            "--item-type",
+            "constant",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, ExitCode::SUCCESS, "out={out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["total"], 1);
+    assert_eq!(v["data"]["hits"][0]["name"], "MAX");
+    assert_eq!(v["data"]["hits"][0]["kind"], "constant");
 }
 
 #[tokio::test]
@@ -290,6 +316,41 @@ async fn e2e_lang_pt_br_human_error() {
 }
 
 #[tokio::test]
+async fn e2e_lang_invalid_fail_closed() {
+    allow_localhost();
+    let dir = tempfile::tempdir().unwrap();
+    let (code, out, _) = run_with_config(dir.path(), &["--lang", "ja", "version", "--json"]).await;
+    assert_eq!(code, ExitCode::from(65));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "invalid_input");
+}
+
+/// Invalid TOML must exit 78 via structured emit (never mis-report as internal 70).
+#[tokio::test]
+async fn e2e_invalid_config_toml_exit_78() {
+    allow_localhost();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "timeout_secs = [\n").unwrap();
+    let (code, out, err) = run_with_config(dir.path(), &["version", "--json"]).await;
+    assert_eq!(code, ExitCode::from(78), "out={out} err={err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json error envelope");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "config");
+    assert_eq!(v["error"]["code"], 78);
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid config.toml"),
+        "message={}",
+        v["error"]["message"]
+    );
+    // Must not be the last-resort "internal:" path.
+    assert!(!err.contains("unhandled internal"), "err={err}");
+}
+
+#[tokio::test]
 async fn e2e_cli_overrides_and_doctor_fail() {
     allow_localhost();
     let dir = tempfile::tempdir().unwrap();
@@ -335,7 +396,7 @@ async fn e2e_full_cli_overrides_version() {
     ];
     let mut out = Vec::new();
     let mut err = Vec::new();
-    let code = run_with_io(argv, Cursor::new(Vec::new()), &mut out, &mut err).await;
+    let code = run_with_io(argv, Cursor::new(Vec::new()), &mut out, &mut err, true).await;
     assert_eq!(code, ExitCode::SUCCESS);
     let s = String::from_utf8_lossy(&out);
     assert!(s.contains("docsrs-cli"));
@@ -345,7 +406,7 @@ async fn e2e_full_cli_overrides_version() {
 async fn e2e_schema_text_and_all_cmds() {
     allow_localhost();
     let dir = tempfile::tempdir().unwrap();
-    for cmd in ["readme", "get-item", "search-in-crate", "doctor"] {
+    for cmd in ["readme", "get-item", "search-in-crate", "doctor", "config"] {
         let (code, out, _) = run_with_config(dir.path(), &["schema", "--cmd", cmd]).await;
         assert_eq!(code, ExitCode::SUCCESS, "cmd={cmd}");
         assert!(out.contains("properties") || out.contains("$schema") || out.contains("{"));
@@ -392,6 +453,7 @@ async fn e2e_vv_verbose_dry_run() {
         Cursor::new(Vec::new()),
         &mut out,
         &mut err,
+        true,
     )
     .await;
     assert_eq!(code, ExitCode::SUCCESS);

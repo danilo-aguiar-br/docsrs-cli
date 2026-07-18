@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli search-crates success data",
   "type": "object",
-  "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms.",
+  "description": "Payload under envelope.data for command search-crates. Outer envelope always has schema_version=1, ok, command, duration_ms. Optional hit/meta fields are omitted when absent (skip_serializing_if / not serialized as null).",
   "required": ["query", "page", "per_page", "sort", "hits", "meta"],
   "properties": {
     "query": { "type": "string" },
@@ -29,16 +29,45 @@
           "description": { "type": "string" },
           "downloads": { "type": "integer", "minimum": 0 },
           "version": { "type": "string" },
-          "documentation": { "type": ["string", "null"] },
-          "max_version": { "type": ["string", "null"] },
-          "max_stable_version": { "type": ["string", "null"] },
-          "default_version": { "type": ["string", "null"] },
-          "recent_downloads": { "type": ["integer", "null"] },
-          "exact_match": { "type": ["boolean", "null"] },
-          "yanked": { "type": ["boolean", "null"] },
-          "repository": { "type": ["string", "null"] },
-          "homepage": { "type": ["string", "null"] }
-        }
+          "documentation": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "max_version": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "max_stable_version": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "default_version": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "recent_downloads": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "exact_match": {
+            "type": "boolean",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "yanked": {
+            "type": "boolean",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "repository": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          },
+          "homepage": {
+            "type": "string",
+            "description": "Omitted when absent (never JSON null)"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "meta": {
@@ -46,9 +75,17 @@
       "required": ["total"],
       "properties": {
         "total": { "type": "integer", "minimum": 0 },
-        "next_page": { "type": ["string", "null"] },
-        "prev_page": { "type": ["string", "null"] }
-      }
+        "next_page": {
+          "type": "string",
+          "description": "Omitted when absent (never JSON null)"
+        },
+        "prev_page": {
+          "type": "string",
+          "description": "Omitted when absent (never JSON null)"
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "additionalProperties": false
 }

@@ -9,9 +9,45 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "docsrs-cli",
     version,
     about = "One-shot CLI for crates.io and docs.rs documentation",
-    long_about = None,
+    long_about = "One-shot BORN→EXECUTE→DIE CLI for crates.io and docs.rs.
+\
+Stdout is the data contract (JSON or markdown). Stderr is diagnostics only.
+\
+JSON is automatic when stdout is not a TTY; force human with --format markdown|text.
+\
+First Ctrl-C / SIGINT cancels cooperatively (exit 130). Second Ctrl-C within 5s force-exits 130.
+\
+SIGTERM and SIGHUP cancel as terminate (exit 143). On Windows, Ctrl+Break and console close also terminate (143).
+\
+Broken pipe on stdout is exit 141 (pipeline-safe; no stack trace).",
+    after_help = "Examples:
+  \
+docsrs-cli search-crates serde --json
+  \
+docsrs-cli readme tokio --json
+  \
+docsrs-cli get-item clap trait clap::Parser --json
+  \
+docsrs-cli search-in-crate reqwest Client --json
+  \
+docsrs-cli doctor --json
+  \
+docsrs-cli config path --json
+  \
+docsrs-cli config show --json
+  \
+docsrs-cli config init --json
+  \
+docsrs-cli commands --json
+  \
+docsrs-cli completions bash
+  \
+docsrs-cli --dry-run readme serde
+  \
+# Agents: JSON is auto when stdout is not a TTY; force markdown with --format markdown",
     disable_help_subcommand = false
 )]
+/// Top-level clap parser for the `docsrs-cli` binary.
 pub struct Cli {
     /// Emit JSON envelope on stdout
     #[arg(long, global = true)]
@@ -33,7 +69,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "DOCSRS_CLI_USER_AGENT")]
     pub user_agent: Option<String>,
 
-    /// Force human message locale (en or pt-BR)
+    /// Force human stderr locale: en or pt-BR (fail-closed; JSON stays English)
     #[arg(long, global = true, env = "DOCSRS_CLI_LANG")]
     pub lang: Option<String>,
 
@@ -61,11 +97,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub dry_run: bool,
 
-    /// Cap downloaded body size in bytes
-    #[arg(long, global = true)]
+    /// Cap downloaded body size in bytes (hard max 10485760 = 10 MiB; cannot raise above)
+    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_BODY_BYTES")]
     pub max_body_bytes: Option<u64>,
 
-    /// Cap emitted payload size in bytes
+    /// Cap emitted payload size in bytes (hard max 2097152 = 2 MiB; cannot raise above)
     #[arg(long, global = true, env = "DOCSRS_CLI_MAX_OUTPUT_BYTES")]
     pub max_output_bytes: Option<u64>,
 
@@ -73,9 +109,25 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub rate_limit_delay_ms: Option<u64>,
 
-    /// Max HTTP retries for transient errors
-    #[arg(long, global = true)]
+    /// Max concurrent CPU parse workers (`0` = auto from CPUs and free RAM)
+    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_CONCURRENCY")]
+    pub max_concurrency: Option<u32>,
+
+    /// Max HTTP retries for transient errors (after the first attempt)
+    #[arg(long, global = true, env = "DOCSRS_CLI_MAX_RETRIES")]
     pub max_retries: Option<u32>,
+
+    /// Base backoff delay in milliseconds for HTTP retries
+    #[arg(long, global = true, env = "DOCSRS_CLI_RETRY_BASE_MS")]
+    pub retry_base_ms: Option<u64>,
+
+    /// Maximum single HTTP retry sleep in milliseconds
+    #[arg(long, global = true, env = "DOCSRS_CLI_RETRY_MAX_DELAY_MS")]
+    pub retry_max_delay_ms: Option<u64>,
+
+    /// Disable HTTP retries (incident kill switch / debug)
+    #[arg(long, global = true, env = "DOCSRS_CLI_DISABLE_RETRY")]
+    pub disable_retry: bool,
 
     /// Increase stderr verbosity
     #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
@@ -90,16 +142,22 @@ pub struct Cli {
     pub no_color: bool,
 
     #[command(subcommand)]
+    /// Subcommand to execute for this invocation.
     pub command: Commands,
 }
 
+/// Human or machine output format selection.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum OutputFormat {
+    /// Markdown rendered for humans.
     Markdown,
+    /// JSON envelope for agents.
     Json,
+    /// Plain-text rendering (alias of markdown for most commands).
     Text,
 }
 
+/// Product subcommands exposed on the CLI surface.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Search crates on crates.io
@@ -118,28 +176,38 @@ pub enum Commands {
     },
     /// Fetch crate overview docblock from docs.rs (not git README)
     Readme {
+        /// Crate name on crates.io or a stdlib crate.
         crate_name: String,
+        /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
     },
     /// Fetch documentation for a typed item
     GetItem {
+        /// Crate name on crates.io or a stdlib crate.
         crate_name: String,
+        /// Kind: module|struct|trait|enum|union|fn|function|type|const|constant|static|macro|attr|attribute|derive
         item_type: String,
+        /// Path with `::` or `/` (e.g. `tokio::runtime::Runtime`, `runtime/Runtime`, `async_trait`)
         item_path: String,
+        /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
     },
     /// Search symbols in crate all.html index
     SearchInCrate {
+        /// Crate name on crates.io or a stdlib crate.
         crate_name: String,
         /// Substring filter; empty string lists all classified items
         #[arg(default_value = "")]
         query: String,
+        /// Optional crate version (`latest` when omitted).
         #[arg(long)]
         crate_version: Option<String>,
+        /// Optional item-kind filter (`struct`, `fn`, …).
         #[arg(long)]
         item_type: Option<String>,
+        /// Maximum hits to emit.
         #[arg(long, default_value_t = 100)]
         limit: u32,
     },
@@ -147,23 +215,35 @@ pub enum Commands {
     Version,
     /// Validate local TLS/config readiness
     Doctor,
+    /// List the full command tree for agent discovery
+    Commands,
     /// Emit JSON Schema for a command
     Schema {
+        /// Command name whose schema should be printed.
         #[arg(long)]
         cmd: String,
     },
     /// Generate shell completions
     Completions {
+        /// Target shell for completion scripts.
         #[arg(value_enum)]
         shell: Shell,
     },
     /// Inspect or clear the XDG HTTP disk cache
     Cache {
+        /// Cache maintenance action.
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Manage XDG config paths and the optional config.toml (no secrets / no .env)
+    Config {
+        /// Config lifecycle action.
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
+/// Cache maintenance subcommands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum CacheAction {
     /// Delete all cached HTTP bodies under the cache dir
@@ -172,19 +252,42 @@ pub enum CacheAction {
     Stats,
 }
 
+/// XDG config lifecycle subcommands (no API keys; product is public HTTP only).
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConfigAction {
+    /// Print resolved config/cache directories and which layer won
+    Path,
+    /// Print effective runtime configuration (merged defaults + TOML + env + CLI)
+    Show,
+    /// Create a default config.toml under the resolved config directory
+    Init {
+        /// Overwrite an existing config.toml
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// crates.io search sort order.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum SortKind {
+    /// Rank by search relevance.
     Relevance,
+    /// Rank by total downloads.
     Downloads,
+    /// Rank by recent downloads.
     #[value(name = "recent-downloads")]
     RecentDownloads,
+    /// Rank by recent crate updates.
     #[value(name = "recent-updates")]
     RecentUpdates,
+    /// Rank newest crates first.
     New,
+    /// Rank alphabetically by crate name.
     Alphabetical,
 }
 
 impl SortKind {
+    /// crates.io API `sort=` query value.
     pub fn as_api_str(self) -> &'static str {
         match self {
             Self::Relevance => "relevance",
@@ -197,11 +300,16 @@ impl SortKind {
     }
 }
 
+/// Shells supported by the `completions` subcommand.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Shell {
+    /// Bash completions.
     Bash,
+    /// Zsh completions.
     Zsh,
+    /// Fish completions.
     Fish,
+    /// Elvish completions.
     Elvish,
     /// Canonical CLI value is `power-shell`; `powershell` is accepted as alias.
     #[value(name = "power-shell", alias = "powershell")]
@@ -209,6 +317,18 @@ pub enum Shell {
 }
 
 impl Shell {
+    /// Stable CLI / JSON name for this shell.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Fish => "fish",
+            Self::Elvish => "elvish",
+            Self::PowerShell => "power-shell",
+        }
+    }
+
+    /// Convert to the `clap_complete` shell enum.
     pub fn to_clap_shell(self) -> clap_complete::Shell {
         match self {
             Self::Bash => clap_complete::Shell::Bash,
@@ -222,11 +342,30 @@ impl Shell {
 
 impl Cli {
     /// Whether JSON envelope is requested.
-    pub fn wants_json(&self) -> bool {
-        self.json || matches!(self.format, Some(OutputFormat::Json))
+    ///
+    /// Agent-first rules (stdin/stdout LLM contract):
+    /// - `--json` or `--format json` → JSON
+    /// - `--format markdown|text` → human (never auto-JSON)
+    /// - otherwise → JSON when stdout is not a TTY (pipe/agent), markdown on TTY
+    pub fn wants_json(&self, stdout_is_terminal: bool) -> bool {
+        if self.json || matches!(self.format, Some(OutputFormat::Json)) {
+            return true;
+        }
+        if matches!(
+            self.format,
+            Some(OutputFormat::Markdown | OutputFormat::Text)
+        ) {
+            return false;
+        }
+        !stdout_is_terminal
     }
 
     /// Reject incompatible `--json` + `--format text|markdown`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::ErrorKind::Usage`] when `--json` is combined with
+    /// `--format text` or `--format markdown`.
     pub fn validate_format_conflict(&self) -> Result<(), crate::error::AppError> {
         use crate::error::{AppError, ErrorKind};
         if self.json
@@ -262,11 +401,23 @@ mod tests {
     #[test]
     fn wants_json_from_flag_or_format() {
         let a = Cli::try_parse_from(["docsrs-cli", "version", "--json"]).unwrap();
-        assert!(a.wants_json());
+        assert!(a.wants_json(true));
+        assert!(a.wants_json(false));
         let b = Cli::try_parse_from(["docsrs-cli", "version", "--format", "json"]).unwrap();
-        assert!(b.wants_json());
+        assert!(b.wants_json(true));
         let c = Cli::try_parse_from(["docsrs-cli", "version"]).unwrap();
-        assert!(!c.wants_json());
+        assert!(!c.wants_json(true), "TTY defaults to human markdown");
+        assert!(c.wants_json(false), "non-TTY auto-JSON for agents");
+        let d = Cli::try_parse_from(["docsrs-cli", "version", "--format", "markdown"]).unwrap();
+        assert!(!d.wants_json(false), "explicit format overrides auto-JSON");
+        let e = Cli::try_parse_from(["docsrs-cli", "version", "--format", "text"]).unwrap();
+        assert!(!e.wants_json(false));
+    }
+
+    #[test]
+    fn parse_commands_subcommand() {
+        let cli = Cli::try_parse_from(["docsrs-cli", "commands"]).unwrap();
+        assert!(matches!(cli.command, Commands::Commands));
     }
 
     #[test]

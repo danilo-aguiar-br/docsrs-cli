@@ -3,13 +3,32 @@ name = "docsrs-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents"
-license = "MIT"
+description = "One-shot stdin/stdout CLI that fetches crates.io and docs.rs docs for LLM agents without a daemon"
+license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["docs", "crates", "cli", "rustdoc", "llm"]
-categories = ["command-line-utilities", "development-tools"]
-repository = "https://github.com/docsrs-cli/docsrs-cli"
-authors = ["docsrs-cli contributors"]
+categories = ["command-line-utilities", "development-tools", "web-programming::http-client"]
+repository = "https://github.com/danilo-aguiar-br/docsrs-cli"
+documentation = "https://docs.rs/docsrs-cli"
+homepage = "https://github.com/danilo-aguiar-br/docsrs-cli"
+authors = ["Danilo Aguiar <daniloaguiarbr@proton.me>"]
+exclude = [
+    "docs_rules/",
+    "/CLAUDE.md",
+    "/AGENTS.md",
+    "/MEMORY.md",
+    ".serena/",
+    ".claude/",
+    ".grok/",
+    ".vscode/",
+    "logs/",
+    "memory/",
+    "target/",
+    "rust_out",
+]
+
+[badges]
+maintenance = { status = "actively-developed" }
 
 [[bin]]
 name = "docsrs-cli"
@@ -19,20 +38,44 @@ path = "src/main.rs"
 name = "docsrs_cli"
 path = "src/lib.rs"
 
+# docs.rs build metadata (targets explicit after 2026-05-01 single-default policy).
+# https://blog.rust-lang.org/2026/04/04/docsrs-only-default-targets/
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+default-target = "x86_64-unknown-linux-gnu"
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 
 [dependencies]
-clap = { version = "4", features = ["derive", "env", "cargo", "wrap_help"] }
+# Proc-macro only: embeds Mermaid diagrams into rustdoc HTML (docs.rs / cargo doc).
+aquamarine = "0.6"
+clap = { version = "4", features = ["derive", "env", "cargo", "wrap_help", "color", "unicode"] }
 clap_complete = "4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+# Multi-thread runtime is the product default (I/O workers + spawn_blocking CPU).
+# See `src/main.rs`, `src/concurrency.rs`, and Rules Rust parallelism audit.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "signal", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Explicit features: env-filter + fmt + registry; bridge `log` deps (reqwest/html).
+# No `json`/`chrono` file rotation — agent CLI writes diagnostics to stderr only.
+# See `src/telemetry.rs` for OOS notes (OTLP, reload, tracing-appender).
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "fmt",
+    "ansi",
+    "env-filter",
+    "registry",
+    "tracing-log",
+] }
 directories = "6"
 sys-locale = "0.3"
 toml = "0.8"
@@ -42,16 +85,39 @@ htmd = "0.5"
 bytes = "1"
 futures-util = "0.3"
 regex = "1"
-once_cell = "1"
 sha2 = "0.10"
+fs4 = { version = "1.1.0", features = ["sync"] }
+# CPU-bound fan-out for large all.html hit scans (gated by size threshold).
+rayon = "1"
 
 [dev-dependencies]
 wiremock = "0.6"
 pretty_assertions = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "test-util"] }
 tempfile = "3"
+# POSIX kill(2) for signal harness tests — no external `kill` CLI (native-crate rules).
+libc = "0.2"
 
+# Release profile tuned for a one-shot CLI (network-bound hot path).
+# Latency rules applied where product-appropriate:
+#   opt-level=3, lto="fat", codegen-units=1, panic="abort"
+# Strip symbols after profiling (product ships stripped; no in-tree flamegraph).
+# Overflow checks stay at Cargo release defaults (off).
+# OOS for this CLI (no HFT / long-lived daemon): target-cpu=native, PGO, BOLT,
+# mimalloc/jemalloc, mlockall, huge pages, isolcpus — would need measured P99.
 [profile.release]
-lto = "thin"
+opt-level = 3
+lto = "fat"
 codegen-units = 1
+panic = "abort"
 strip = "symbols"
+
+# Keep dependency crates at full optimization even if a future override changes the root.
+[profile.release.package."*"]
+opt-level = 3
+
+# Benchmarks inherit release optimizations when/if criterion benches are added.
+[profile.bench]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

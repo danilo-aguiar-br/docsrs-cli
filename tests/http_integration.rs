@@ -13,7 +13,9 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn allow_localhost() {
+    // SAFETY: test-only process environment mutation before concurrent work.
     // Integration tests compile the lib without cfg(test); opt-in localhost.
+    // The variable is a boolean allowlist flag for wiremock localhost origins.
     unsafe {
         std::env::set_var("DOCSRS_CLI_ALLOW_LOCALHOST", "1");
     }
@@ -342,6 +344,21 @@ async fn search_in_crate_at_end_to_end() {
     assert_eq!(data.hits[0].name, "Client");
     assert_eq!(data.hits[0].kind, "struct");
     assert!(!data.truncated);
+
+    let constants = docs_rs::search_in_crate_at(
+        &http,
+        "demo",
+        "1.0.0",
+        "",
+        Some(ItemKind::Constant),
+        10,
+        &url,
+    )
+    .await
+    .unwrap();
+    assert_eq!(constants.total, 1, "constant.MAX must be indexed");
+    assert_eq!(constants.hits[0].name, "MAX");
+    assert_eq!(constants.hits[0].kind, "constant");
 }
 
 #[tokio::test]
@@ -412,6 +429,76 @@ async fn retry_429_exhausted() {
 }
 
 #[tokio::test]
+async fn disable_retry_kill_switch_no_second_attempt() {
+    allow_localhost();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.max_retries = 5;
+    cfg.disable_retry = true;
+    let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    assert!(!http.retry_policy().enabled);
+    let url = url::Url::parse(&format!("{}/api/v1/crates?q=x", server.uri())).unwrap();
+    let err = http.get_json(&url).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Unavailable);
+}
+
+#[tokio::test]
+async fn permanent_404_not_retried() {
+    allow_localhost();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/missing"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("gone"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.max_retries = 5;
+    let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    let url = url::Url::parse(&format!("{}/missing", server.uri())).unwrap();
+    let resp = http.get_html(&url).await.unwrap();
+    assert_eq!(resp.status.as_u16(), 404);
+}
+
+#[tokio::test]
+async fn retry_503_with_retry_after_then_success() {
+    allow_localhost();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.max_retries = 2;
+    cfg.retry_base_ms = 5;
+    let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    let url = url::Url::parse(&format!("{}/api/v1/crates?q=serde", server.uri())).unwrap();
+    let resp = http.get_json(&url).await.unwrap();
+    assert!(resp.status.is_success());
+}
+
+#[tokio::test]
 async fn cancel_before_request() {
     allow_localhost();
     let server = MockServer::start().await;
@@ -454,6 +541,67 @@ async fn rate_limit_delay_between_hits() {
         t0.elapsed() >= Duration::from_millis(20),
         "expected rate limit delay between hits"
     );
+}
+
+#[tokio::test]
+async fn rate_limit_cross_process_stamp_with_cache_dir() {
+    allow_localhost();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ping"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("ok"),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_cfg(&server.uri());
+    cfg.rate_limit_delay_ms = 80;
+    cfg.cache_dir = Some(dir.path().to_path_buf());
+    cfg.no_cache = true; // only use cache_dir for rate-limit lock/stamp
+
+    let http_a = HttpClient::new(cfg.clone(), CancelFlag::new()).unwrap();
+    let http_b = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    let url = url::Url::parse(&format!("{}/ping", server.uri())).unwrap();
+    let t0 = std::time::Instant::now();
+    let _ = http_a.get_html(&url).await.unwrap();
+    // Second client shares stamp via exclusive lock + stamp file.
+    let _ = http_b.get_html(&url).await.unwrap();
+    assert!(
+        t0.elapsed() >= Duration::from_millis(60),
+        "cross-process stamp should enforce delay, elapsed={:?}",
+        t0.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_cancel_during_sleep_propagates() {
+    allow_localhost();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ping"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("ok"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.rate_limit_delay_ms = 5_000;
+    let cancel = CancelFlag::new();
+    let http = HttpClient::new(cfg, cancel.clone()).unwrap();
+    let url = url::Url::parse(&format!("{}/ping", server.uri())).unwrap();
+    // First hit records in-process clock.
+    let _ = http.get_html(&url).await.unwrap();
+    cancel.cancel();
+    let err = http.get_html(&url).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Terminated);
 }
 
 #[tokio::test]

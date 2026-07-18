@@ -10,26 +10,39 @@ use crate::http::{HttpClient, content_type_looks_json, decode_utf8};
 /// One hit from crates.io search.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CrateSearchHit {
+    /// Crate name on crates.io.
     pub name: String,
+    /// Short crate description (may be empty).
     pub description: String,
+    /// Total download count.
     pub downloads: u64,
+    /// Newest or default version string for display.
     pub version: String,
+    /// Documentation URL when provided by crates.io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
+    /// Highest published version when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_version: Option<String>,
+    /// Highest stable version when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_stable_version: Option<String>,
+    /// Default version selected by crates.io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_version: Option<String>,
+    /// Recent download count when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_downloads: Option<u64>,
+    /// Whether the query matched the crate name exactly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_match: Option<bool>,
+    /// Whether the default version is yanked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub yanked: Option<bool>,
+    /// Source repository URL when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
+    /// Project homepage URL when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
 }
@@ -37,9 +50,12 @@ pub struct CrateSearchHit {
 /// Pagination meta from crates.io (may contain `page=` or `seek=` tokens).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SearchMeta {
+    /// Total hits reported by crates.io.
     pub total: u64,
+    /// Opaque next-page token when more results exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page: Option<String>,
+    /// Opaque previous-page token when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_page: Option<String>,
 }
@@ -47,11 +63,17 @@ pub struct SearchMeta {
 /// Full search-crates data payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SearchCratesData {
+    /// Original search query string.
     pub query: String,
+    /// 1-based page number used for the request.
     pub page: u32,
+    /// Page size used for the request.
     pub per_page: u32,
+    /// Sort order API token.
     pub sort: String,
+    /// Search hits on this page.
     pub hits: Vec<CrateSearchHit>,
+    /// Pagination metadata from crates.io.
     pub meta: SearchMeta,
 }
 
@@ -94,11 +116,19 @@ pub fn clamp_search_pagination(per_page: u32, page: u32) -> (u32, u32) {
 }
 
 /// Build the planned crates.io search URL.
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Internal`] when the base URL cannot be parsed.
 pub fn planned_url(query: &str, per_page: u32, sort: &str, page: u32) -> AppResult<Url> {
     planned_url_on_host(HOST_CRATES_IO, query, per_page, sort, page)
 }
 
 /// Build search URL against an arbitrary host (used by tests / local mocks).
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Internal`] when `host` does not form a valid base URL.
 pub fn planned_url_on_host(
     host: &str,
     query: &str,
@@ -130,6 +160,10 @@ pub fn planned_url_on_host(
 }
 
 /// Parse crates.io JSON body into product types (offline-testable).
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Parse`] when `text` is not valid crates.io search JSON.
 pub fn parse_search_body(
     text: &str,
     query: &str,
@@ -152,9 +186,10 @@ pub fn parse_search_body(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "No description available".to_string()),
             downloads: c.downloads,
+            // `or_else` avoids eager clone of `max_version` when `newest_version` is Some.
             version: c
                 .newest_version
-                .or(c.max_version.clone())
+                .or_else(|| c.max_version.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
             documentation: c.documentation,
             max_version: c.max_version,
@@ -183,6 +218,11 @@ pub fn parse_search_body(
 }
 
 /// Execute search-crates against crates.io (production origin).
+///
+/// # Errors
+///
+/// Propagates URL build, HTTP, UTF-8 decode, and JSON parse failures from
+/// [`search_crates_on_origin`].
 pub async fn search_crates(
     http: &HttpClient,
     query: &str,
@@ -202,6 +242,11 @@ pub async fn search_crates(
 }
 
 /// Execute search-crates against a configurable origin (offline mocks).
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Internal`] when the origin URL is invalid.
+/// Propagates HTTP and parse errors from [`search_crates_at`].
 pub async fn search_crates_on_origin(
     http: &HttpClient,
     origin: &str,
@@ -216,6 +261,12 @@ pub async fn search_crates_on_origin(
 }
 
 /// Execute search against a pre-built URL (mock hosts in tests).
+///
+/// # Errors
+///
+/// Propagates HTTP transport errors from [`HttpClient::get_json`].
+/// Maps non-success HTTP statuses via [`AppError::from_http_status`].
+/// Returns [`ErrorKind::Parse`] when the body is not UTF-8 or not valid crates.io JSON.
 pub async fn search_crates_at(
     http: &HttpClient,
     url: &Url,

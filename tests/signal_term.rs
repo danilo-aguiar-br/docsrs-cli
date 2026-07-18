@@ -2,15 +2,29 @@
 
 #[cfg(unix)]
 mod unix {
+    use std::io;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    fn kill_signal(pid: u32, sig: &str) {
-        let status = Command::new("kill")
-            .args([format!("-{sig}"), pid.to_string()])
-            .status()
-            .expect("kill");
-        assert!(status.success() || status.code() == Some(1));
+    /// Send a POSIX signal to `pid` via `libc::kill` (no external `kill` CLI).
+    ///
+    /// `Command::new("kill")` is forbidden by native-crate rules; `std` `ChildExt::send_signal`
+    /// is still nightly-only (`unix_send_signal`). `libc` is the mature stable binding.
+    fn kill_signal(pid: u32, sig: libc::c_int) {
+        // SAFETY: `pid` is `Child::id()` of a process we spawned in this test. `sig` is a
+        // standard POSIX signal constant (`SIGINT` / `SIGTERM`). A concurrent exit of the
+        // child may yield ESRCH; that is treated as a non-fatal race below.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
+        if rc == 0 {
+            return;
+        }
+        let err = io::Error::last_os_error();
+        // Child may have exited between spawn and signal delivery.
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ESRCH),
+            "libc::kill failed for pid={pid} sig={sig}: {err}"
+        );
     }
 
     #[test]
@@ -40,14 +54,16 @@ mod unix {
             ],
         ] {
             for _ in 0..8 {
+                // Command::new targets the product under test (accepted); not a human CLI tool.
                 let mut child = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"))
                     .args(&args)
+                    .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn()
                     .expect("spawn docsrs-cli");
                 std::thread::sleep(Duration::from_millis(25));
-                kill_signal(child.id(), "TERM");
+                kill_signal(child.id(), libc::SIGTERM);
                 let code = child.wait().expect("wait").code();
                 if code == Some(143) {
                     return;
@@ -65,6 +81,7 @@ mod unix {
     #[test]
     fn sigint_while_running_exits_130() {
         for _ in 0..8 {
+            // Command::new targets the product under test (accepted); not a human CLI tool.
             let mut child = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"))
                 .args([
                     "search-in-crate",
@@ -76,12 +93,13 @@ mod unix {
                     "--rate-limit-delay-ms",
                     "0",
                 ])
+                .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("spawn");
             std::thread::sleep(Duration::from_millis(25));
-            kill_signal(child.id(), "INT");
+            kill_signal(child.id(), libc::SIGINT);
             let code = child.wait().expect("wait").code();
             if code == Some(130) {
                 return;

@@ -1,8 +1,11 @@
-//! Live network tests — opt-in via DOCSRS_CLI_NETWORK_TESTS=1.
+//! Live network tests.
+//!
+//! - crates.io / docs.rs: `DOCSRS_CLI_NETWORK_TESTS=1`
+//! - doc.rust-lang.org stdlib: `DOCSRS_CLI_STDLIB_NETWORK_TESTS=1` (separate policy)
 //!
 //! Default suite never opens external sockets.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn enabled() -> bool {
@@ -12,9 +15,18 @@ fn enabled() -> bool {
     )
 }
 
+fn stdlib_enabled() -> bool {
+    matches!(
+        std::env::var("DOCSRS_CLI_STDLIB_NETWORK_TESTS").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 fn bin() -> Command {
+    // Spawns the product under test (accepted Command::new). stdin closed per native-crate rules.
     let mut c = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"));
     c.env_remove("RUST_LOG");
+    c.stdin(Stdio::null());
     // Respect crawler policy: modest delay already in defaults.
     c
 }
@@ -100,4 +112,111 @@ fn live_search_in_crate_reqwest_client() {
     assert_eq!(v["ok"], true);
     let hits = v["data"]["hits"].as_array().unwrap();
     assert!(hits.iter().any(|h| h["name"] == "Client"));
+}
+
+#[test]
+fn live_stdlib_readme_std() {
+    if !stdlib_enabled() {
+        eprintln!("skip: set DOCSRS_CLI_STDLIB_NETWORK_TESTS=1");
+        return;
+    }
+    let (code, v, _) = run_json(&["readme", "std", "--no-cache"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    let src = v["data"]["source_url"].as_str().unwrap_or("");
+    assert!(
+        src.contains("doc.rust-lang.org") && src.contains("/std/"),
+        "stdlib readme must use doc.rust-lang.org: {src}"
+    );
+    assert_eq!(v["data"]["empty"], false);
+    assert!(!v["data"]["markdown"].as_str().unwrap_or("").is_empty());
+    std::thread::sleep(Duration::from_millis(1100));
+}
+
+#[test]
+fn live_stdlib_get_item_option() {
+    if !stdlib_enabled() {
+        return;
+    }
+    // Option is an enum in rustdoc (`enum.Option.html`), not a struct.
+    let (code, v, _) = run_json(&[
+        "get-item",
+        "std",
+        "enum",
+        "std::option::Option",
+        "--no-cache",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    let src = v["data"]["source_url"].as_str().unwrap_or("");
+    assert!(
+        src.contains("doc.rust-lang.org") && src.contains("enum.Option.html"),
+        "source_url={src}"
+    );
+    assert_eq!(v["data"]["empty"], false);
+    std::thread::sleep(Duration::from_millis(1100));
+}
+
+#[test]
+fn live_stdlib_readme_core() {
+    if !stdlib_enabled() {
+        return;
+    }
+    let (code, v, _) = run_json(&["readme", "core", "--no-cache"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    let src = v["data"]["source_url"].as_str().unwrap_or("");
+    assert!(
+        src.contains("doc.rust-lang.org") && src.contains("/core/"),
+        "source_url={src}"
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+}
+
+/// G-18: prove search-in-crate against stdlib all.html (or honest NotFound on that host).
+#[test]
+fn live_stdlib_search_in_crate_option() {
+    if !stdlib_enabled() {
+        return;
+    }
+    let (code, v, _) = run_json(&[
+        "search-in-crate",
+        "std",
+        "Option",
+        "--limit",
+        "20",
+        "--no-cache",
+    ]);
+    if code == 0 {
+        assert_eq!(v["ok"], true, "{v}");
+        let src = v["data"]["source_url"].as_str().unwrap_or("");
+        assert!(
+            src.contains("doc.rust-lang.org"),
+            "search-in-crate stdlib host wrong: {src}"
+        );
+        let hits = v["data"]["hits"].as_array().unwrap();
+        assert!(
+            hits.iter().any(|h| {
+                h["name"].as_str().unwrap_or("").contains("Option")
+                    || h["path"].as_str().unwrap_or("").contains("Option")
+            }),
+            "expected Option hit in {hits:?}"
+        );
+    } else {
+        // Honest failure on doc.rust-lang.org (e.g. all.html 404) — must not silently hit docs.rs.
+        assert_eq!(
+            code, 66,
+            "unexpected exit for stdlib search-in-crate: {code} {v}"
+        );
+        let msg = v["error"]["message"].as_str().unwrap_or("");
+        let src = v["error"]["source_url"]
+            .as_str()
+            .or_else(|| v["data"]["source_url"].as_str())
+            .unwrap_or("");
+        let combined = format!("{msg} {src} {v}");
+        assert!(
+            combined.contains("doc.rust-lang.org") || combined.contains("not_found") || code == 66,
+            "G-18: failure must stay on stdlib host / not_found: {v}"
+        );
+    }
 }

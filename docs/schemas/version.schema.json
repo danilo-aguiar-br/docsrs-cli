@@ -8,6 +8,7 @@
     "name": { "type": "string", "const": "docsrs-cli" },
     "version": { "type": "string" },
     "msrv": { "type": "string" },
-    "os": { "type": "string" }
+    "os": { "type": "string" },
+    "arch": { "type": "string" }
   }
 }

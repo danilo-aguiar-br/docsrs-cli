@@ -1,141 +1,169 @@
+[Português (pt-BR)](README.pt-BR.md)
+
 # docsrs-cli
 
-One-shot stdin/stdout CLI that fetches Rust crate documentation from crates.io and docs.rs for LLM agents.
+> Fetch crates.io and docs.rs docs in one shot for agents.
 
-The process **BORN → EXECUTE → FINALIZE → DIE**. No daemon, no sticky session, no embedded server, no product telemetry.
+[![docs.rs](https://img.shields.io/docsrs/docsrs-cli)](https://docs.rs/docsrs-cli)
+[![crates.io](https://img.shields.io/crates/v/docsrs-cli)](https://crates.io/crates/docsrs-cli)
+[![License](https://img.shields.io/crates/l/docsrs-cli)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-orange)](Cargo.toml)
+[![Downloads](https://img.shields.io/crates/d/docsrs-cli)](https://crates.io/crates/docsrs-cli)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-blue)](https://www.rust-lang.org/)
 
-## Install (local)
 
+## What is it
+- One-shot stdin/stdout CLI for crates.io search and docs.rs item pages
+- Lifecycle is always BORN, EXECUTE, FINALIZE, DIE
+- No daemon, no sticky session, no product telemetry
+- JSON auto-selects when stdout is not a TTY
+- Public HTTP only against an allowlist of docs hosts
+
+
+## The Pain
+- Agents scrape HTML by hand and burn tokens on noise
+- Browser tabs and curl pipelines do not form a stable contract
+- Sticky MCP servers keep sockets open between turns
+
+
+## Why
+- Stable JSON envelopes on stdout for every command
+- Markdown human path when you force `--format markdown`
+- XDG disk cache with TTL and soft budget
+- Polite rate limits, full-jitter HTTP retry, cancel-safe shutdown
+- Exit codes agents can branch on without parsing prose
+
+
+## Superpowers
+- `search-crates` against crates.io with pagination and sort
+- `readme` for the docs.rs crate overview docblock
+- `get-item` for typed rustdoc pages by kind and path
+- `search-in-crate` over the crate `all.html` index
+- stdlib fetch for `std`, `core`, and `alloc` via doc.rust-lang.org
+- `commands`, `schema`, `doctor`, `version` for agent discovery
+- `cache` and `config` for XDG maintenance without secrets
+
+
+## Quick Start
 ```bash
-cargo install --path . --locked
+cargo install docsrs-cli --locked
+docsrs-cli search-crates serde --json
+docsrs-cli readme tokio --json
+docsrs-cli get-item clap trait clap::Parser --json
+docsrs-cli doctor --json
 ```
+
+
+## Installation
+- From crates.io: `cargo install docsrs-cli --locked`
+- From a local checkout: `cargo install --path . --locked`
+- MSRV is Rust 1.88
+- No Cargo feature flags exist in this package
+
+
+## Usage
+- Pass `--json` or pipe stdout for the agent envelope
+- Force human output with `--format markdown` or `--format text`
+- Plan URLs without network using `--dry-run`
+- Raise wall-clock budget with `--timeout <seconds>`
+- Disable disk cache with `--no-cache`
+
 
 ## Commands
+- Full surface has 11 top-level commands
+- `search-crates <query> [--page N] [--per-page N] [--sort KIND]` — crates.io search
+- `--sort` accepts `relevance`, `downloads`, `recent-downloads`, `recent-updates`, `new`, `alphabetical`
+- `readme <crate> [--crate-version V]` — docs.rs crate overview docblock
+- `get-item <crate> <item_type> <item_path> [--crate-version V]` — typed rustdoc item
+- `item_type` accepts `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
+- `item_path` accepts `::` or `/` separators and optional crate prefix
+- `search-in-crate <crate> [query] [--crate-version V] [--item-type K] [--limit N]` — `all.html` symbol search
+- Empty `query` lists classified items up to `--limit`
+- `version` — binary version
+- `doctor` — local TLS, paths, concurrency, and retry readiness
+- `commands` — full command tree for agents
+- `schema --cmd <name>` — JSON Schema for a command payload
+- Schema targets: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `cache`, `config`
+- `completions <shell>` — `bash`, `zsh`, `fish`, `elvish`, `power-shell` (`powershell` alias)
+- Examples: `docsrs-cli completions bash`, `completions zsh`, `completions fish`, `completions elvish`, `completions power-shell`, `completions powershell`
+- `cache stats` — report entry count, bytes, and budget
+- `cache clear` — delete cached HTTP bodies
+- `config path` — print resolved config/cache dirs and winning layer
+- `config show` — print effective runtime configuration
+- `config init [--force]` — create default `config.toml`
+- Example overwrite: `docsrs-cli config init --force --json`
 
-```bash
-docsrs-cli search-crates serde --json
-docsrs-cli search-crates serde --page 2 --per-page 20 --sort downloads --json
-docsrs-cli search-crates serde --sort alphabetical --json
-docsrs-cli readme tokio --json
-docsrs-cli readme async-trait --dry-run --json
-docsrs-cli get-item clap trait clap::Parser --json
-docsrs-cli get-item clap trait Parser --json
-docsrs-cli get-item tokio struct tokio::runtime::Runtime --json
-docsrs-cli search-in-crate reqwest Client --json
-docsrs-cli search-in-crate clap Parser --item-type function --json
-docsrs-cli search-in-crate tokio "" --limit 50 --json
-docsrs-cli search-in-crate tokio "" --limit 1 --json   # truncated:true when total > emitted
-docsrs-cli doctor --json
-docsrs-cli schema --cmd get-item --json
-docsrs-cli version --json
-docsrs-cli completions bash
-docsrs-cli completions powershell
-docsrs-cli completions power-shell
-docsrs-cli cache stats --json
-docsrs-cli cache clear --json
-```
 
-## Agent contract
+## Environment Variables
+- `DOCSRS_CLI_HOME` — sandbox root for config and cache
+- `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` — path overrides
+- `DOCSRS_CLI_TIMEOUT_SECS` — wall-clock timeout
+- `DOCSRS_CLI_USER_AGENT` / `DOCSRS_CLI_CONTACT` — identity headers
+- `DOCSRS_CLI_CACHE_TTL_SECS` / `DOCSRS_CLI_MAX_CACHE_BYTES` / `DOCSRS_CLI_NO_CACHE`
+- `DOCSRS_CLI_MAX_BODY_BYTES` / `DOCSRS_CLI_MAX_OUTPUT_BYTES` — hard caps
+- `DOCSRS_CLI_MAX_CONCURRENCY` — CPU parse worker budget (`0` = auto)
+- `DOCSRS_CLI_MAX_RETRIES` / `DOCSRS_CLI_RETRY_BASE_MS` / `DOCSRS_CLI_RETRY_MAX_DELAY_MS`
+- `DOCSRS_CLI_DISABLE_RETRY` — kill switch for HTTP retries
+- `DOCSRS_CLI_LANG` — human stderr locale (`en` or `pt-BR`)
+- `RUST_LOG` / `NO_COLOR` / `CLICOLOR_FORCE` — diagnostics only
 
-- stdout: data only (Markdown default or JSON with `--json`)
-- stderr: tracing, progress after 2s, and human errors (without `--json`)
-- process exits after one operation (no daemon)
-- exit codes: `0` success, `2` clap, `64` usage, `65` invalid input, `66` not found, `69` rate limit/unavailable, `70` internal, `74` network, `78` config, `124` timeout, `130` SIGINT, `143` SIGTERM
-- JSON errors use `error.kind` (SIGINT/SIGTERM surface as `canceled` with codes 130/143)
-- without `--json`, failures leave stdout empty and write a human line to stderr
-- `search-in-crate` sets `data.truncated` to `true` when `total > emitted` (limit cut the hit list)
-- dry-run clamps `page` and `per_page` in both `planned_url` and `planned_params` (`page` min 1, `per_page` 1..=100)
-- `--limit 0` on `search-in-crate` emits zero hits with `truncated` true when any matches exist
 
-## Configuration
+## Integration Patterns
+- Agent subprocess: `docsrs-cli get-item serde trait Serialize --json`
+- Discovery first: `docsrs-cli commands --json` then `schema --cmd get-item --json`
+- Offline plan: `docsrs-cli --dry-run readme tokio --json`
+- See [INTEGRATIONS.md](INTEGRATIONS.md) and [docs/AGENTS.md](docs/AGENTS.md)
 
-XDG config file via `directories::ProjectDirs::from("", "", "docsrs-cli")`:
 
-- Linux config: `$XDG_CONFIG_HOME/docsrs-cli/config.toml` (or `~/.config/docsrs-cli/config.toml`)
-- Linux cache: `$XDG_CACHE_HOME/docsrs-cli/` (or `~/.cache/docsrs-cli/`)
-- macOS/Windows: platform equivalent from the `directories` crate
+## Performance
+- One primary GET per command in the happy path
+- Multi-thread Tokio runtime with Semaphore concurrency budget
+- `spawn_blocking` for large HTML parse work
+- Disk cache avoids repeat downloads within TTL
 
-Precedence: CLI flags > environment allowlist > TOML > defaults.
 
-Environment allowlist:
+## Memory Requirements
+- Default body cap is 10 MiB per response
+- Default output cap is 2 MiB per emission
+- Default disk cache budget is 256 MiB soft
+- Raise caps only with explicit flags or env, never above hard ceilings
 
-- `DOCSRS_CLI_CONFIG_DIR`
-- `DOCSRS_CLI_CACHE_DIR`
-- `DOCSRS_CLI_CACHE_TTL_SECS` (default 86400; `0` never serves hits from disk)
-- `DOCSRS_CLI_MAX_CACHE_BYTES` (default 268435456 = 256 MiB; `0` = unlimited)
-- `DOCSRS_CLI_NO_CACHE` (`1`/`true`/`yes`/`on` disables disk cache)
-- `DOCSRS_CLI_LANG`
-- `DOCSRS_CLI_TIMEOUT_SECS`
-- `DOCSRS_CLI_USER_AGENT`
-- `DOCSRS_CLI_CONTACT`
-- `DOCSRS_CLI_MAX_OUTPUT_BYTES`
-- `DOCSRS_CLI_NETWORK_TESTS` (live integration tests only)
-- `DOCSRS_CLI_ALLOW_LOCALHOST` (wiremock / local mocks only)
-- `DOCSRS_CLI_CRATES_IO_ORIGIN` (override crates.io base URL; offline mocks)
-- `DOCSRS_CLI_DOCS_RS_ORIGIN` (override docs.rs base URL; offline mocks)
-- `RUST_LOG`, `NO_COLOR`, proxy vars
 
-HTTP disk cache stores successful GET bodies under the cache dir (`http/v1/`). Key is SHA-256 of URL + parser version + Accept. Each entry stores a body checksum. Use `--no-cache` or `DOCSRS_CLI_NO_CACHE=1` for a fresh fetch. Default TTL is 24 hours. Default size budget is 256 MiB; oldest entries are evicted after each store when over budget. Manage with:
+## Troubleshooting FAQ
+- Exit `66` means the crate or item was not found
+- Exit `69` means rate limit or temporary upstream outage
+- Exit `74` means transport failure; retry with backoff
+- Exit `78` means local config or path readiness failed
+- Exit `124` means wall-clock timeout
+- Run `docsrs-cli doctor --json` before blaming the network
 
-```bash
-docsrs-cli cache stats --json
-docsrs-cli cache clear --json
-docsrs-cli --max-cache-bytes 1048576 doctor --json
-```
 
-Default rate limit delay is **1000 ms per host per process**. Parallel processes do not share a delay clock. Agents must serialize many invocations against the same host to avoid HTTP 429.
+## Documentation Map
+- [How to use](docs/HOW_TO_USE.md)
+- [Agents](docs/AGENTS.md)
+- [Cookbook](docs/COOKBOOK.md)
+- [Cross platform](docs/CROSS_PLATFORM.md)
+- [Migration](docs/MIGRATION.md)
+- [Testing](docs/TESTING.md)
+- [JSON schemas](docs/schemas/README.md)
+- [Integrations](INTEGRATIONS.md)
+- [llms.txt](llms.txt)
 
-## JSON schemas
 
-Machine-readable schemas live in `docs/schemas/`:
+## Contributing
+- Read [CONTRIBUTING.md](CONTRIBUTING.md)
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md)
 
-- `search-crates.schema.json`
-- `readme.schema.json`
-- `get-item.schema.json`
-- `search-in-crate.schema.json`
-- `version.schema.json`
-- `doctor.schema.json`
-- `cache.schema.json` (`schema --cmd cache` / `cache-clear` / `cache-stats`)
 
-Emit a schema at runtime:
+## Security
+- Read [SECURITY.md](SECURITY.md)
+- Report issues privately to daniloaguiarbr@proton.me
 
-```bash
-docsrs-cli schema --cmd search-crates --json
-docsrs-cli schema --cmd cache --json
-```
 
-## Testing
+## Changelog
+- See [CHANGELOG.md](CHANGELOG.md) for version history
 
-Offline (default, no external network):
-
-```bash
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
-cargo llvm-cov --locked --summary-only
-```
-
-Live network opt-in (respects 1s delay; crawler-friendly UA):
-
-```bash
-DOCSRS_CLI_NETWORK_TESTS=1 cargo test --locked --test network_live -- --nocapture
-```
-
-Coverage gate for 0.1.0 is lines at least 80 percent via `cargo llvm-cov`.
-
-Do not publish to crates.io or push GitHub releases without explicit maintainer authorization.
-
-## Policy
-
-- TLS: rustls only (no OpenSSL / native-tls)
-- HTTP methods: GET only for product operations
-- Host allowlist: `crates.io`, `docs.rs`, `static.docs.rs`
-- User-Agent identifies `docsrs-cli/{version}` plus contact
-- No product telemetry
-- No CI/CD workflows in this repository
-- XDG HTTP disk cache with checksum, TTL, size budget, clear/stats (disable via `--no-cache`)
-- Code and public APIs in English; human stderr messages support `en` and `pt-BR`
 
 ## License
-
-MIT
+- Dual-licensed under MIT or Apache-2.0
+- See [LICENSE](LICENSE), [LICENSE-MIT](LICENSE-MIT), and [LICENSE-APACHE](LICENSE-APACHE)

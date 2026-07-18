@@ -1,0 +1,6 @@
+# Pin the compiler for local/contributor builds (MSRV = package.rust-version).
+# Product policy: no GitHub Actions CI in-tree; validation is local `cargo test --locked`.
+[toolchain]
+channel = "1.88.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
