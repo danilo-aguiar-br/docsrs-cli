@@ -2,9 +2,11 @@
 
 use std::time::Duration;
 
+use docsrs_cli::cli::SortKind;
 use docsrs_cli::config::Config;
 use docsrs_cli::crates_io;
 use docsrs_cli::docs_rs;
+use docsrs_cli::domain::{AllowedOrigin, CrateName, SearchQuery, VersionArg};
 use docsrs_cli::error::ErrorKind;
 use docsrs_cli::http::HttpClient;
 use docsrs_cli::item_kind::ItemKind;
@@ -12,13 +14,19 @@ use docsrs_cli::shutdown::CancelFlag;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn allow_localhost() {
-    // SAFETY: test-only process environment mutation before concurrent work.
-    // Integration tests compile the lib without cfg(test); opt-in localhost.
-    // The variable is a boolean allowlist flag for wiremock localhost origins.
-    unsafe {
-        std::env::set_var("DOCSRS_CLI_ALLOW_LOCALHOST", "1");
-    }
+fn cn(s: &str) -> CrateName {
+    CrateName::parse(s).unwrap()
+}
+fn ver(s: &str) -> VersionArg {
+    VersionArg::parse(s).unwrap()
+}
+fn sq(s: &str) -> SearchQuery {
+    SearchQuery::parse(s, true).unwrap()
+}
+
+/// Parse wiremock `server.uri()` into an allowlisted origin (requires `allow_loopback`).
+fn origin_of(uri: &str) -> AllowedOrigin {
+    AllowedOrigin::parse_with(uri, true).expect("wiremock origin must pass allowlist")
 }
 
 fn test_cfg(base: &str) -> Config {
@@ -26,17 +34,18 @@ fn test_cfg(base: &str) -> Config {
     Config {
         rate_limit_delay_ms: 0,
         max_retries: 2,
-        retry_base_ms: 10,
+        retry_base_ms: 50, // MIN_RETRY_BASE_MS floor
+        retry_max_elapsed_ms: 10_000,
         timeout_secs: 5,
         connect_timeout_secs: 2,
         user_agent: "docsrs-cli/0.1.0 (test@example.com)".into(),
+        allow_loopback: true,
         ..Config::default()
     }
 }
 
 #[tokio::test]
 async fn search_crates_fixture_meta_and_fallback_description() {
-    allow_localhost();
     let server = MockServer::start().await;
     let body = include_str!("fixtures/crates_io/search_serde.json");
     Mock::given(method("GET"))
@@ -44,8 +53,7 @@ async fn search_crates_fixture_meta_and_fallback_description() {
         .and(query_param("q", "serde"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(body),
+                .set_body_raw(body, "application/json"),
         )
         .mount(&server)
         .await;
@@ -66,23 +74,23 @@ async fn search_crates_fixture_meta_and_fallback_description() {
 
 #[tokio::test]
 async fn search_crates_at_end_to_end_with_seek_meta() {
-    allow_localhost();
     let server = MockServer::start().await;
     let body = include_str!("fixtures/crates_io/search_seek_meta.json");
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(body),
+                .set_body_raw(body, "application/json"),
         )
         .mount(&server)
         .await;
 
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = crates_io::planned_url_on_host(&server.uri(), "example", 10, "downloads", 1).unwrap();
-    let data = crates_io::search_crates_at(&http, &url, "example", 10, "downloads", 1)
+    let query = SearchQuery::parse("example", false).unwrap();
+    let url =
+        crates_io::planned_url_on_host(&origin_of(&server.uri()), &query, 10, SortKind::Downloads, 1).unwrap();
+    let data = crates_io::search_crates_at(&http, &url, &query, 10, SortKind::Downloads, 1)
         .await
         .unwrap();
     assert_eq!(data.hits[0].name, "example");
@@ -95,7 +103,6 @@ async fn search_crates_at_end_to_end_with_seek_meta() {
 
 #[tokio::test]
 async fn retry_on_503_then_success() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
@@ -108,8 +115,7 @@ async fn retry_on_503_then_success() {
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .mount(&server)
         .await;
@@ -123,15 +129,13 @@ async fn retry_on_503_then_success() {
 
 #[tokio::test]
 async fn body_cap_returns_budget_not_retryable() {
-    allow_localhost();
     let server = MockServer::start().await;
     let big = "x".repeat(1024);
     Mock::given(method("GET"))
         .and(path("/big"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(big),
+                .set_body_raw(big, "text/html"),
         )
         .mount(&server)
         .await;
@@ -148,14 +152,12 @@ async fn body_cap_returns_budget_not_retryable() {
 
 #[tokio::test]
 async fn docs_rs_readme_fixture_via_mock() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/latest/demo/index.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html; charset=utf-8")
-                .set_body_string(include_str!("fixtures/docs_rs/readme_docblock.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/readme_docblock.html"), "text/html; charset=utf-8"),
         )
         .mount(&server)
         .await;
@@ -174,14 +176,15 @@ async fn docs_rs_readme_fixture_via_mock() {
 #[tokio::test]
 async fn all_html_fixture_kinds() {
     let html = include_str!("fixtures/docs_rs/all_html_sample.html");
+    let base = url::Url::parse("https://docs.rs/demo/1.0.0/demo/all.html").unwrap();
     let hits = docs_rs::parse_all_html_hits(
         html,
-        "demo",
-        "1.0.0",
-        "",
+        &base,
+        &SearchQuery::parse("", true).unwrap(),
         None,
         100,
         docsrs_cli::domain::MatchMode::Prefix,
+        &docsrs_cli::shutdown::CancelFlag::new(),
     )
     .unwrap();
     assert!(
@@ -195,12 +198,12 @@ async fn all_html_fixture_kinds() {
     assert!(!hits.iter().any(|h| h.name == "skipme"));
     let limited = docs_rs::parse_all_html_hits(
         html,
-        "demo",
-        "1.0.0",
-        "",
+        &base,
+        &SearchQuery::parse("", true).unwrap(),
         None,
         2,
         docsrs_cli::domain::MatchMode::Prefix,
+        &docsrs_cli::shutdown::CancelFlag::new(),
     )
     .unwrap();
     assert_eq!(limited.len(), 2);
@@ -209,7 +212,6 @@ async fn all_html_fixture_kinds() {
 
 #[tokio::test]
 async fn host_not_allowlisted() {
-    allow_localhost();
     let cfg = test_cfg("http://example.com");
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = url::Url::parse("https://evil.example/api").unwrap();
@@ -221,8 +223,8 @@ async fn host_not_allowlisted() {
 async fn item_kind_function_alias_url() {
     let segs = vec!["get".into()];
     let u = docs_rs::get_item_url(
-        "reqwest",
-        "latest",
+        &CrateName::parse("reqwest").unwrap(),
+        &VersionArg::parse("latest").unwrap(),
         ItemKind::parse("function").unwrap(),
         &segs,
     )
@@ -233,22 +235,20 @@ async fn item_kind_function_alias_url() {
 
 #[tokio::test]
 async fn fetch_readme_at_end_to_end() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/latest/demo/index.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html; charset=utf-8")
-                .set_body_string(include_str!("fixtures/docs_rs/readme_docblock.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/readme_docblock.html"), "text/html; charset=utf-8"),
         )
         .mount(&server)
         .await;
 
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::readme_url_on_origin(&server.uri(), "demo", "latest").unwrap();
-    let data = docs_rs::fetch_readme_at(&http, "demo", "latest", &url)
+    let url = docs_rs::readme_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("latest")).unwrap();
+    let data = docs_rs::fetch_readme_at(&http, &cn("demo"), &ver("latest"), &url)
         .await
         .unwrap();
     assert_eq!(data.crate_name, "demo");
@@ -262,7 +262,6 @@ async fn fetch_readme_at_end_to_end() {
 
 #[tokio::test]
 async fn fetch_readme_at_404() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/missing/latest/missing/index.html"))
@@ -271,8 +270,8 @@ async fn fetch_readme_at_404() {
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::readme_url_on_origin(&server.uri(), "missing", "latest").unwrap();
-    let err = docs_rs::fetch_readme_at(&http, "missing", "latest", &url)
+    let url = docs_rs::readme_url_on_origin(&origin_of(&server.uri()), &cn("missing"), &ver("latest")).unwrap();
+    let err = docs_rs::fetch_readme_at(&http, &cn("missing"), &ver("latest"), &url)
         .await
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -280,14 +279,12 @@ async fn fetch_readme_at_404() {
 
 #[tokio::test]
 async fn fetch_item_at_end_to_end() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/tokio/latest/tokio/runtime/struct.Runtime.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/get_item_main.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/get_item_main.html"), "text/html"),
         )
         .mount(&server)
         .await;
@@ -295,9 +292,9 @@ async fn fetch_item_at_end_to_end() {
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let segs = vec!["tokio".into(), "runtime".into(), "Runtime".into()];
     let url =
-        docs_rs::get_item_url_on_origin(&server.uri(), "tokio", "latest", ItemKind::Struct, &segs)
+        docs_rs::get_item_url_on_origin(&origin_of(&server.uri()), &cn("tokio"), &ver("latest"), ItemKind::Struct, &segs)
             .unwrap();
-    let data = docs_rs::fetch_item_at(&http, "tokio", "latest", ItemKind::Struct, &segs, &url)
+    let data = docs_rs::fetch_item_at(&http, &cn("tokio"), &ver("latest"), ItemKind::Struct, &segs, &url)
         .await
         .unwrap();
     assert_eq!(data.item_type, "struct");
@@ -313,7 +310,6 @@ async fn fetch_item_at_end_to_end() {
 
 #[tokio::test]
 async fn fetch_item_at_404() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(404))
@@ -323,9 +319,9 @@ async fn fetch_item_at_404() {
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let segs = vec!["Missing".into()];
     let url =
-        docs_rs::get_item_url_on_origin(&server.uri(), "demo", "1.0.0", ItemKind::Struct, &segs)
+        docs_rs::get_item_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("1.0.0"), ItemKind::Struct, &segs)
             .unwrap();
-    let err = docs_rs::fetch_item_at(&http, "demo", "1.0.0", ItemKind::Struct, &segs, &url)
+    let err = docs_rs::fetch_item_at(&http, &cn("demo"), &ver("1.0.0"), ItemKind::Struct, &segs, &url)
         .await
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -333,25 +329,23 @@ async fn fetch_item_at_404() {
 
 #[tokio::test]
 async fn search_in_crate_at_end_to_end() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/1.0.0/demo/all.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/all_html_sample.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/all_html_sample.html"), "text/html"),
         )
         .mount(&server)
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::all_html_url_on_origin(&server.uri(), "demo", "1.0.0").unwrap();
+    let url = docs_rs::all_html_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("1.0.0")).unwrap();
     let data = docs_rs::search_in_crate_at(
         &http,
-        "demo",
-        "1.0.0",
-        "Client",
+        &cn("demo"),
+        &ver("1.0.0"),
+        &sq("Client"),
         Some(ItemKind::Struct),
         10,
         docsrs_cli::domain::MatchMode::Prefix,
@@ -367,9 +361,9 @@ async fn search_in_crate_at_end_to_end() {
 
     let constants = docs_rs::search_in_crate_at(
         &http,
-        "demo",
-        "1.0.0",
-        "",
+        &cn("demo"),
+        &ver("1.0.0"),
+        &sq(""),
         Some(ItemKind::Constant),
         10,
         docsrs_cli::domain::MatchMode::Prefix,
@@ -384,7 +378,6 @@ async fn search_in_crate_at_end_to_end() {
 
 #[tokio::test]
 async fn search_in_crate_at_404() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/gone/latest/gone/all.html"))
@@ -393,12 +386,12 @@ async fn search_in_crate_at_404() {
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::all_html_url_on_origin(&server.uri(), "gone", "latest").unwrap();
+    let url = docs_rs::all_html_url_on_origin(&origin_of(&server.uri()), &cn("gone"), &ver("latest")).unwrap();
     let err = docs_rs::search_in_crate_at(
         &http,
-        "gone",
-        "latest",
-        "x",
+        &cn("gone"),
+        &ver("latest"),
+        &sq("x"),
         None,
         10,
         docsrs_cli::domain::MatchMode::Prefix,
@@ -411,7 +404,6 @@ async fn search_in_crate_at_404() {
 
 #[tokio::test]
 async fn retry_on_429_then_success() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
@@ -424,15 +416,14 @@ async fn retry_on_429_then_success() {
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .mount(&server)
         .await;
 
     let mut cfg = test_cfg(&server.uri());
     cfg.max_retries = 2;
-    cfg.retry_base_ms = 5;
+    cfg.retry_base_ms = 50;
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = url::Url::parse(&format!("{}/api/v1/crates?q=serde", server.uri())).unwrap();
     let resp = http.get_json(&url).await.unwrap();
@@ -441,7 +432,6 @@ async fn retry_on_429_then_success() {
 
 #[tokio::test]
 async fn retry_429_exhausted() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
@@ -460,7 +450,6 @@ async fn retry_429_exhausted() {
 
 #[tokio::test]
 async fn disable_retry_kill_switch_no_second_attempt() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
@@ -481,7 +470,6 @@ async fn disable_retry_kill_switch_no_second_attempt() {
 
 #[tokio::test]
 async fn permanent_404_not_retried() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/missing"))
@@ -500,7 +488,6 @@ async fn permanent_404_not_retried() {
 
 #[tokio::test]
 async fn retry_503_with_retry_after_then_success() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
@@ -513,15 +500,14 @@ async fn retry_503_with_retry_after_then_success() {
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .mount(&server)
         .await;
 
     let mut cfg = test_cfg(&server.uri());
     cfg.max_retries = 2;
-    cfg.retry_base_ms = 5;
+    cfg.retry_base_ms = 50;
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
     let url = url::Url::parse(&format!("{}/api/v1/crates?q=serde", server.uri())).unwrap();
     let resp = http.get_json(&url).await.unwrap();
@@ -529,8 +515,64 @@ async fn retry_503_with_retry_after_then_success() {
 }
 
 #[tokio::test]
+async fn retry_429_with_http_date_retry_after_then_success() {
+    let server = MockServer::start().await;
+    // Near-future HTTP-date (≤1s) — parser accepts IMF-fixdate form.
+    let when = std::time::SystemTime::now() + Duration::from_millis(200);
+    let http_date = httpdate::fmt_http_date(when);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", http_date.as_str()))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.max_retries = 2;
+    cfg.retry_base_ms = 50;
+    cfg.retry_max_elapsed_ms = 5_000;
+    let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    let url = url::Url::parse(&format!("{}/api/v1/crates?q=serde", server.uri())).unwrap();
+    let resp = http.get_json(&url).await.unwrap();
+    assert!(resp.status.is_success());
+}
+
+#[tokio::test]
+async fn retry_max_elapsed_budget_blocks_second_attempt() {
+    let server = MockServer::start().await;
+    // Always 503 with a multi-second Retry-After — budget of 100ms cannot afford the wait.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "5"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = test_cfg(&server.uri());
+    cfg.max_retries = 5;
+    cfg.retry_base_ms = 50;
+    cfg.retry_max_delay_ms = 50;
+    // Server Retry-After=5s > 100ms budget → no second attempt (hint not shrunk).
+    cfg.retry_max_elapsed_ms = 100;
+    let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
+    assert_eq!(http.retry_policy().max_elapsed_ms, 100);
+    let url = url::Url::parse(&format!("{}/api/v1/crates?q=x", server.uri())).unwrap();
+    let err = http.get_json(&url).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Unavailable);
+    assert!(err.is_retryable());
+}
+
+#[tokio::test]
 async fn cancel_before_request() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
@@ -547,14 +589,12 @@ async fn cancel_before_request() {
 
 #[tokio::test]
 async fn rate_limit_delay_between_hits() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/ping"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string("ok"),
+                .set_body_raw("ok", "text/html"),
         )
         .expect(2)
         .mount(&server)
@@ -575,14 +615,12 @@ async fn rate_limit_delay_between_hits() {
 
 #[tokio::test]
 async fn rate_limit_cross_process_stamp_with_cache_dir() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/ping"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string("ok"),
+                .set_body_raw("ok", "text/html"),
         )
         .expect(2)
         .mount(&server)
@@ -610,14 +648,12 @@ async fn rate_limit_cross_process_stamp_with_cache_dir() {
 
 #[tokio::test]
 async fn rate_limit_cancel_during_sleep_propagates() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/ping"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string("ok"),
+                .set_body_raw("ok", "text/html"),
         )
         .mount(&server)
         .await;
@@ -636,7 +672,6 @@ async fn rate_limit_cancel_during_sleep_propagates() {
 
 #[tokio::test]
 async fn non_success_status_on_readme_returns_error() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/latest/demo/index.html"))
@@ -646,8 +681,8 @@ async fn non_success_status_on_readme_returns_error() {
     let mut cfg = test_cfg(&server.uri());
     cfg.max_retries = 0;
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::readme_url_on_origin(&server.uri(), "demo", "latest").unwrap();
-    let err = docs_rs::fetch_readme_at(&http, "demo", "latest", &url)
+    let url = docs_rs::readme_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("latest")).unwrap();
+    let err = docs_rs::fetch_readme_at(&http, &cn("demo"), &ver("latest"), &url)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -658,21 +693,19 @@ async fn non_success_status_on_readme_returns_error() {
 
 #[tokio::test]
 async fn empty_readme_fixture_via_fetch() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/empty/1.0.0/empty/index.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string("<html><body><main id=\"main-content\"></main></body></html>"),
+                .set_body_raw("<html><body><main id=\"main-content\"></main></body></html>", "text/html"),
         )
         .mount(&server)
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::readme_url_on_origin(&server.uri(), "empty", "1.0.0").unwrap();
-    let data = docs_rs::fetch_readme_at(&http, "empty", "1.0.0", &url)
+    let url = docs_rs::readme_url_on_origin(&origin_of(&server.uri()), &cn("empty"), &ver("1.0.0")).unwrap();
+    let data = docs_rs::fetch_readme_at(&http, &cn("empty"), &ver("1.0.0"), &url)
         .await
         .unwrap();
     assert!(data.empty);
@@ -681,33 +714,31 @@ async fn empty_readme_fixture_via_fetch() {
 
 #[tokio::test]
 async fn origin_url_builders_hyphen_crate() {
-    let origin = "http://127.0.0.1:9";
-    let r = docs_rs::readme_url_on_origin(origin, "async-trait", "latest").unwrap();
+    let origin = origin_of("http://127.0.0.1:9");
+    let r = docs_rs::readme_url_on_origin(&origin, &cn("async-trait"), &ver("latest")).unwrap();
     assert!(
         r.as_str()
             .contains("/async-trait/latest/async_trait/index.html")
     );
-    let a = docs_rs::all_html_url_on_origin(origin, "async-trait", "1.0.0").unwrap();
+    let a = docs_rs::all_html_url_on_origin(&origin, &cn("async-trait"), &ver("1.0.0")).unwrap();
     assert!(
         a.as_str()
             .contains("/async-trait/1.0.0/async_trait/all.html")
     );
     let segs = vec!["Parser".into()];
     let g =
-        docs_rs::get_item_url_on_origin(origin, "clap", "latest", ItemKind::Trait, &segs).unwrap();
+        docs_rs::get_item_url_on_origin(&origin, &cn("clap"), &ver("latest"), ItemKind::Trait, &segs).unwrap();
     assert!(g.as_str().contains("/clap/latest/clap/trait.Parser.html"));
 }
 
 #[tokio::test]
 async fn disk_cache_serves_second_request_without_network() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .expect(1)
         .mount(&server)
@@ -733,14 +764,12 @@ async fn disk_cache_serves_second_request_without_network() {
 
 #[tokio::test]
 async fn no_cache_flag_bypasses_disk() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .expect(2)
         .mount(&server)
@@ -759,25 +788,23 @@ async fn no_cache_flag_bypasses_disk() {
 
 #[tokio::test]
 async fn search_in_crate_truncated_true_when_limit_cuts() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/1.0.0/demo/all.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/all_html_sample.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/all_html_sample.html"), "text/html"),
         )
         .mount(&server)
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::all_html_url_on_origin(&server.uri(), "demo", "1.0.0").unwrap();
+    let url = docs_rs::all_html_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("1.0.0")).unwrap();
     let data = docs_rs::search_in_crate_at(
         &http,
-        "demo",
-        "1.0.0",
-        "",
+        &cn("demo"),
+        &ver("1.0.0"),
+        &sq(""),
         None,
         2,
         docsrs_cli::domain::MatchMode::Prefix,
@@ -792,25 +819,23 @@ async fn search_in_crate_truncated_true_when_limit_cuts() {
 
 #[tokio::test]
 async fn search_in_crate_limit_zero_emits_empty_hits() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/1.0.0/demo/all.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/all_html_sample.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/all_html_sample.html"), "text/html"),
         )
         .mount(&server)
         .await;
     let cfg = test_cfg(&server.uri());
     let http = HttpClient::new(cfg, CancelFlag::new()).unwrap();
-    let url = docs_rs::all_html_url_on_origin(&server.uri(), "demo", "1.0.0").unwrap();
+    let url = docs_rs::all_html_url_on_origin(&origin_of(&server.uri()), &cn("demo"), &ver("1.0.0")).unwrap();
     let data = docs_rs::search_in_crate_at(
         &http,
-        "demo",
-        "1.0.0",
-        "",
+        &cn("demo"),
+        &ver("1.0.0"),
+        &sq(""),
         None,
         0,
         docsrs_cli::domain::MatchMode::Prefix,

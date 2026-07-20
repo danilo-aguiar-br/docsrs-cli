@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::config::{Config, SCHEMA_VERSION};
+use crate::config::{Config, HOST_DOCS_RS, SCHEMA_VERSION, SCHEME_HTTPS};
 use crate::crates_io::SearchCratesData;
 use crate::docs_rs::{GetItemData, ReadmeData, SearchInCrateData};
 use crate::error::{AppError, ErrorKind};
@@ -58,12 +58,19 @@ pub struct DryRunData<'a, P: Serialize> {
 }
 
 /// JSON error envelope for agents.
+///
+/// Parity with success envelopes: agents always get `command` + `duration_ms`
+/// (Camada Y / GAP-X-004) so failures correlate with the attempted wire command.
 #[derive(Debug, Serialize)]
-pub struct ErrorEnvelope {
+pub struct ErrorEnvelope<'a> {
     /// Envelope schema version.
     pub schema_version: u32,
     /// Always `false` for error envelopes.
     pub ok: bool,
+    /// Wire command name (`get-item`, `usage`, `cache-path`, …).
+    pub command: &'a str,
+    /// Wall-clock duration of the attempt in milliseconds.
+    pub duration_ms: u64,
     /// Structured error body.
     pub error: ErrorBody,
 }
@@ -88,7 +95,13 @@ pub struct ErrorBody {
 ///
 /// Includes title, description, required fields, a property table, and the
 /// raw JSON Schema fenced for agents that still want the machine schema.
-pub fn render_schema_markdown(cmd: &str, schema: &serde_json::Value) -> String {
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::Internal`] when pretty-printing the embedded schema fails
+/// (should not happen for valid `serde_json::Value` trees).
+pub fn render_schema_markdown(cmd: &str, schema: &serde_json::Value) -> crate::error::AppResult<String> {
+    use crate::error::{AppError, ErrorKind};
     // Schema markdown is small but non-trivial; avoid repeated small reallocs.
     let mut out = String::with_capacity(1024);
     let title = schema.get("title").and_then(|v| v.as_str()).unwrap_or(cmd);
@@ -134,9 +147,12 @@ pub fn render_schema_markdown(cmd: &str, schema: &serde_json::Value) -> String {
     }
     out.push_str("\n## JSON Schema\n\n");
     out.push_str("```json\n");
-    out.push_str(&serde_json::to_string_pretty(schema).unwrap_or_else(|_| "{}".to_string()));
+    let pretty = serde_json::to_string_pretty(schema).map_err(|e| {
+        AppError::with_source(ErrorKind::Internal, "json pretty-print failed", e)
+    })?;
+    out.push_str(&pretty);
     out.push_str("\n```\n");
-    out
+    Ok(out)
 }
 
 fn schema_type_label(prop: &serde_json::Value) -> String {
@@ -209,7 +225,11 @@ pub fn dry_run_envelope<'a, P: Serialize>(
 }
 
 /// Build an error envelope. SIGINT/SIGTERM surface as kind `canceled` with exit 130/143.
-pub fn error_envelope(err: &AppError) -> ErrorEnvelope {
+///
+/// `command` is the wire name of the attempted command (`usage` when clap fails
+/// before dispatch). `duration_ms` is wall time since process start for that
+/// attempt (may be `0` for early parse failures).
+pub fn error_envelope<'a>(err: &AppError, command: &'a str, duration_ms: u64) -> ErrorEnvelope<'a> {
     let kind = err.kind();
     let kind_str = match kind {
         ErrorKind::Interrupted | ErrorKind::Terminated => "canceled",
@@ -219,6 +239,8 @@ pub fn error_envelope(err: &AppError) -> ErrorEnvelope {
     ErrorEnvelope {
         schema_version: SCHEMA_VERSION,
         ok: false,
+        command,
+        duration_ms,
         error: ErrorBody {
             code: kind.exit_code(),
             kind: kind_str.to_string(),
@@ -245,6 +267,75 @@ pub fn truncate_output(text: &str, max_bytes: u64) -> (String, bool) {
     (text[..end].to_string(), true)
 }
 
+/// Reduce `search-crates` hits until the success envelope fits `max_output_bytes`.
+///
+/// Preserves JSON parseability (never mid-string cuts). Sets `truncated=true` when
+/// any hit is dropped for budget. If even zero hits exceeds the budget, returns
+/// the zero-hit payload with `truncated=true` (agents should raise the cap).
+pub fn apply_output_budget_search_crates(
+    mut data: SearchCratesData,
+    max_bytes: u64,
+    duration_ms: u64,
+    source_url: Option<&str>,
+) -> SearchCratesData {
+    if max_bytes == 0 {
+        data.hits.clear();
+        data.truncated = true;
+        return data;
+    }
+    loop {
+        let env = success_envelope("search-crates", &data, duration_ms, source_url);
+        let len = match serde_json::to_vec(&env) {
+            Ok(buf) => buf.len() as u64,
+            Err(_) => return data,
+        };
+        if len <= max_bytes {
+            return data;
+        }
+        if data.hits.is_empty() {
+            data.truncated = true;
+            return data;
+        }
+        data.hits.pop();
+        data.truncated = true;
+    }
+}
+
+/// Reduce `search-in-crate` hits until the success envelope fits `max_output_bytes`.
+///
+/// `truncated` becomes true when budget (or a prior limit) cuts the list.
+pub fn apply_output_budget_search_in_crate(
+    mut data: SearchInCrateData,
+    max_bytes: u64,
+    duration_ms: u64,
+    source_url: Option<&str>,
+) -> SearchInCrateData {
+    if max_bytes == 0 {
+        data.hits.clear();
+        data.emitted = 0;
+        data.truncated = true;
+        return data;
+    }
+    loop {
+        let env = success_envelope("search-in-crate", &data, duration_ms, source_url);
+        let len = match serde_json::to_vec(&env) {
+            Ok(buf) => buf.len() as u64,
+            Err(_) => return data,
+        };
+        if len <= max_bytes {
+            return data;
+        }
+        if data.hits.is_empty() {
+            data.emitted = 0;
+            data.truncated = true;
+            return data;
+        }
+        data.hits.pop();
+        data.emitted = data.hits.len();
+        data.truncated = true;
+    }
+}
+
 /// Human Markdown for search-crates.
 pub fn render_search_markdown(data: &SearchCratesData) -> String {
     let mut out = format!(
@@ -259,10 +350,12 @@ pub fn render_search_markdown(data: &SearchCratesData) -> String {
         out.push_str(&format!("## {} ({})\n\n", h.name, h.version));
         out.push_str(&format!("**Description:** {}\n\n", h.description));
         out.push_str(&format!("**Downloads:** {}\n\n", h.downloads));
-        out.push_str(&format!(
-            "**Documentation:** {}\n\n---\n\n",
-            h.documentation.as_deref().unwrap_or("N/A")
-        ));
+        let docs = h
+            .documentation
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("{SCHEME_HTTPS}://{HOST_DOCS_RS}/{}", h.name));
+        out.push_str(&format!("**Documentation:** {docs}\n\n---\n\n"));
     }
     out
 }
@@ -352,10 +445,12 @@ mod tests {
 
     #[test]
     fn cancel_kinds_in_envelope() {
-        let e = error_envelope(&AppError::terminated());
+        let e = error_envelope(&AppError::terminated(), "get-item", 0);
         assert_eq!(e.error.code, 143);
+        assert_eq!(e.command, "get-item");
+        assert_eq!(e.duration_ms, 0);
         assert_eq!(e.error.kind, "canceled");
-        let e = error_envelope(&AppError::interrupted());
+        let e = error_envelope(&AppError::interrupted(), "get-item", 1);
         assert_eq!(e.error.code, 130);
         assert_eq!(e.error.kind, "canceled");
     }
@@ -374,6 +469,7 @@ mod tests {
                 prev_page: None,
             },
             cache_hit: false,
+            truncated: false,
         };
         let md = render_search_markdown(&data);
         assert!(md.contains("No crates found"));
@@ -406,6 +502,7 @@ mod tests {
             title: "c::f (fn)".into(),
             cache_hit: false,
             extraction: None,
+            resolved_item_path: None,
         };
         assert!(render_item_markdown(&i).contains("No documentation"));
     }
@@ -505,6 +602,7 @@ mod tests {
                 title: "t".into(),
                 cache_hit: false,
                 extraction: None,
+                resolved_item_path: None,
             },
             &cfg,
         );
@@ -542,5 +640,93 @@ mod tests {
         let md = render_search_in_crate_markdown(&data);
         assert!(md.contains("all items"));
         assert!(md.contains("No matching items"));
+    }
+
+    #[test]
+    fn search_docs_fallback_docs_rs_url() {
+        let data = SearchCratesData {
+            query: "x".into(),
+            page: 1,
+            per_page: 10,
+            sort: "relevance".into(),
+            hits: vec![CrateSearchHit {
+                name: "foo".into(),
+                description: "d".into(),
+                downloads: 1,
+                version: "1.0.0".into(),
+                documentation: None,
+                max_version: None,
+                max_stable_version: None,
+                default_version: None,
+                recent_downloads: None,
+                exact_match: None,
+                yanked: None,
+                repository: None,
+                homepage: None,
+            }],
+            meta: SearchMeta {
+                total: 1,
+                next_page: None,
+                prev_page: None,
+            },
+            cache_hit: false,
+            truncated: false,
+        };
+        let md = render_search_markdown(&data);
+        assert!(md.contains("https://docs.rs/foo"));
+        assert!(!md.contains("N/A"));
+    }
+
+    #[test]
+    fn output_budget_reduces_search_hits() {
+        let mut hits = Vec::new();
+        for i in 0..20 {
+            hits.push(CrateSearchHit {
+                name: format!("crate-{i}"),
+                description: "A".repeat(80),
+                downloads: i as u64,
+                version: "1.0.0".into(),
+                documentation: Some(format!("https://docs.rs/crate-{i}")),
+                max_version: None,
+                max_stable_version: None,
+                default_version: None,
+                recent_downloads: None,
+                exact_match: None,
+                yanked: None,
+                repository: None,
+                homepage: None,
+            });
+        }
+        let data = SearchCratesData {
+            query: "crate".into(),
+            page: 1,
+            per_page: 20,
+            sort: "relevance".into(),
+            hits,
+            meta: SearchMeta {
+                total: 20,
+                next_page: None,
+                prev_page: None,
+            },
+            cache_hit: false,
+            truncated: false,
+        };
+        let budgeted = apply_output_budget_search_crates(data, 800, 1, Some("https://crates.io"));
+        assert!(budgeted.truncated);
+        assert!(budgeted.hits.len() < 20);
+        let env = success_envelope("search-crates", &budgeted, 1, Some("https://crates.io"));
+        let len = serde_json::to_vec(&env).unwrap().len() as u64;
+        assert!(len <= 800, "envelope len {len} > 800");
+    }
+
+    #[test]
+    fn budget_error_is_not_retryable() {
+        let e = AppError::new(ErrorKind::Budget, "body too large");
+        let env = error_envelope(&e, "get-item", 12);
+        assert_eq!(env.command, "get-item");
+        assert_eq!(env.duration_ms, 12);
+        assert_eq!(env.error.kind, "budget");
+        assert_eq!(env.error.code, 74);
+        assert!(!env.error.retryable);
     }
 }

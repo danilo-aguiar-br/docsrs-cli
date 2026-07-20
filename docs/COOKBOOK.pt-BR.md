@@ -12,8 +12,8 @@
 - Timeout wall-clock usa um orçamento seguro de produto via config
 - TTL de cache default é 86400 segundos
 - Orçamento soft de cache default é 256 MiB
-- Max body default é teto duro de 10 MiB
-- Max output default é teto duro de 2 MiB
+- Max body default é teto duro de 10 MiB (valores acima do hard max falham fechados com exit 65)
+- Max output default é teto duro de 2 MiB (valores acima do hard max falham fechados com exit 65)
 - `search-in-crate --match` default é `prefix`
 - `search-in-crate --limit` default é 100 e clamp em 1000
 - JSON é escolhido automaticamente em stdout non-TTY (exceto `completions` bruto)
@@ -75,7 +75,32 @@ docsrs-cli get-item async-trait attribute async_trait --json
 docsrs-cli get-item tokio method runtime::Runtime::new --json
 docsrs-cli get-item tokio fn runtime::Runtime::new --json
 # página do tipo pai + #method.new; payload inclui item_name e resolved_version opcional
-# data.extraction é method quando o markdown fica escopado ao corpo do método
+# data.extraction é method em sucesso; #method.X ausente é not_found (exit 66), nunca sucesso item_page
+```
+
+## Como Recuperar de Typo em Method
+- Problema: o agente digitou `Runtime::neww` e não pode aceitar sucesso falso com página pai
+```bash
+docsrs-cli get-item tokio method Runtime::neww --suggest --json
+# exit 66, ok=false, error.kind=not_found; mensagem pode incluir leaves de método ranqueados (new, …)
+# envelope de erro no topo tem command, duration_ms e error aninhado
+# nunca trate extraction=item_page como sucesso de method (removido em 1.2.0)
+```
+
+## Como Planejar URL de Method Offline
+- Problema: inspecionar parent kind e probes planejados sem rede
+```bash
+docsrs-cli --dry-run get-item tokio method runtime::Runtime::neww --json
+# planned_params.validation=url_shape_only; planned_parent_kind + parent_kind_probe presentes
+# dry-run não prova que a âncora remota existe
+```
+
+## Como Falhar Fechado em Overshoot do Hard Max de Budget
+- Problema: o agente não deve aceitar clamp silencioso quando flags passam do hard max
+```bash
+docsrs-cli --max-body-bytes 999999999 version --json
+docsrs-cli --max-output-bytes 999999999 version --json
+# ambos saem com exit 65 invalid_input (sem clamp silencioso para 10 MiB / 2 MiB)
 ```
 
 ## Como Confirmar Scrub de Chrome do Rustdoc
@@ -206,9 +231,9 @@ docsrs-cli config init --force --json
 ```bash
 docsrs-cli doctor --json
 docsrs-cli doctor --online --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli config init --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --online --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache config init --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache doctor --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache doctor --online --json
 # trate como saudável só quando exit for 0 e top-level ok e data.ok forem ambos true
 ```
 

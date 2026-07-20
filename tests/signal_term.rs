@@ -1,19 +1,26 @@
 //! SIGTERM → exit 143 harness (Unix). No GitHub/crates.io publish.
 
+mod common;
+
 #[cfg(unix)]
 mod unix {
+    use super::common;
     use std::io;
-    use std::process::{Command, Stdio};
     use std::time::Duration;
 
     /// Send a POSIX signal to `pid` via `libc::kill` (no external `kill` CLI).
     ///
-    /// `Command::new("kill")` is forbidden by native-crate rules; `std` `ChildExt::send_signal`
-    /// is still nightly-only (`unix_send_signal`). `libc` is the mature stable binding.
+    /// `Command::new("kill")` is forbidden by native-crate / process rules;
+    /// `std` `ChildExt::send_signal` is still nightly-only (`unix_send_signal`).
+    /// `libc` is the mature stable binding.
     fn kill_signal(pid: u32, sig: libc::c_int) {
-        // SAFETY: `pid` is `Child::id()` of a process we spawned in this test. `sig` is a
-        // standard POSIX signal constant (`SIGINT` / `SIGTERM`). A concurrent exit of the
-        // child may yield ESRCH; that is treated as a non-fatal race below.
+        // SAFETY:
+        // - `pid` is `Child::id()` of a process we spawned in this test (not an arbitrary PID).
+        // - `sig` is a standard POSIX constant (`SIGINT` / `SIGTERM`) from `libc`, not user input.
+        // - Cast `u32 as pid_t` is valid for live process IDs on Unix (positive values fit `pid_t`).
+        // - On `rc != 0`, `last_os_error()` is read immediately with no intervening syscalls.
+        // - Concurrent child exit may yield ESRCH; treated as a non-fatal race below.
+        // - We never free C-owned memory; `kill` has no allocation ownership transfer.
         let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
         if rc == 0 {
             return;
@@ -26,6 +33,9 @@ mod unix {
             "libc::kill failed for pid={pid} sig={sig}: {err}"
         );
     }
+
+    /// Upper bound for one signal attempt (spawn + signal + wait). Prevents hung tests.
+    const WAIT_BUDGET: Duration = Duration::from_secs(15);
 
     #[test]
     fn sigterm_while_running_exits_143() {
@@ -55,16 +65,17 @@ mod unix {
         ] {
             for _ in 0..8 {
                 // Command::new targets the product under test (accepted); not a human CLI tool.
-                let mut child = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"))
+                // Silent Stdio: only exit code matters (Rules Rust — explicit stream policy).
+                let mut child = common::docsrs_cli_cmd_silent()
                     .args(&args)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
                     .spawn()
                     .expect("spawn docsrs-cli");
                 std::thread::sleep(Duration::from_millis(25));
                 kill_signal(child.id(), libc::SIGTERM);
-                let code = child.wait().expect("wait").code();
+                // Timed wait + kill fallback: no orphan/zombie if the child hangs.
+                let code = common::wait_with_timeout(&mut child, WAIT_BUDGET)
+                    .expect("wait")
+                    .code();
                 if code == Some(143) {
                     return;
                 }
@@ -82,7 +93,7 @@ mod unix {
     fn sigint_while_running_exits_130() {
         for _ in 0..8 {
             // Command::new targets the product under test (accepted); not a human CLI tool.
-            let mut child = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"))
+            let mut child = common::docsrs_cli_cmd_silent()
                 .args([
                     "search-in-crate",
                     "serde",
@@ -93,14 +104,13 @@ mod unix {
                     "--rate-limit-delay-ms",
                     "0",
                 ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
                 .spawn()
                 .expect("spawn");
             std::thread::sleep(Duration::from_millis(25));
             kill_signal(child.id(), libc::SIGINT);
-            let code = child.wait().expect("wait").code();
+            let code = common::wait_with_timeout(&mut child, WAIT_BUDGET)
+                .expect("wait")
+                .code();
             if code == Some(130) {
                 return;
             }

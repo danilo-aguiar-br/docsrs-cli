@@ -17,7 +17,7 @@
 - No daemon, no sticky session, no product telemetry
 - JSON auto-selects when stdout is not a TTY
 - Public HTTP only against an allowlist of docs hosts
-- Current product line is 0.1.x
+- Current product line is 1.2.x (release 1.2.0)
 
 
 ## The Pain
@@ -40,7 +40,10 @@
 - `--page-token` echoes `query`/`page`/`per_page`/`sort` from the effective URL
 - `readme` for the docs.rs crate overview docblock with `resolved_version`
 - `get-item` for typed rustdoc pages including associated methods
-- Method fetch scopes markdown and may set `data.extraction` to `method` or `item_page`
+- Method fetch sets `data.extraction` to `method` on success; missing `#method.X` is `not_found` (exit 66), never a false parent-page success
+- `--suggest` on method 404 ranks nearby method leaves from the parent type page (and all.html for other kinds)
+- Budgets above hard max fail closed with exit 65 (no silent clamp)
+- Error envelopes include `command` and `duration_ms` like success envelopes
 - `search-in-crate` over `all.html` with `--match exact|prefix|substring`
 - `--suggest` ranks exact → prefix → substring → edit-distance on get-item 404
 - `item_path` accepts hyphens and normalizes to underscores for rustc paths
@@ -53,14 +56,23 @@
 - `cache` and `config` for XDG maintenance without secrets
 
 
-## What's New in 0.1.2
-- Effective-URL echo for `--page-token` (and matching dry-run `planned_params`)
-- Method-scoped extraction with optional `data.extraction`
-- Non-retryable local body budget errors (`kind=budget`)
-- Cascade `--suggest`, hyphen path normalize, rustdoc chrome scrub
+## What's New in 1.2.0
+- Method fail-closed: missing `#method.X` returns `not_found` (exit 66), not a parent-page false success
+- `--suggest` ranks method leaves from the parent type HTML on method typos
+- Error envelopes carry `command` + `duration_ms` (parity with success)
+- Values above hard max for body/output budgets fail with exit 65 (no silent clamp)
+- Method 404 `source_url` keeps the first probe kind (`struct`), not the last
+- Dry-run documents `validation=url_shape_only` and parent kind probes
+- Offline schema files match `schema --cmd all` (19 wire names including aliases)
+- Full notes under [CHANGELOG.md](CHANGELOG.md) section `[1.2.0]`
+
+## Earlier highlights (1.1.x)
+- Short method paths (`Runtime::new`) resolve via all.html parent type lookup
+- `crate@version` sugar on readme / get-item / search-in-crate
+- Effective-URL echo for `--page-token`, cascade `--suggest`, hyphen normalize
 - Fail-closed `--timeout 0` / `--connect-timeout 0` (exit 65)
-- Human smoke ritual: `scripts/smoke-live.sh` (not CI)
-- Full notes under [CHANGELOG.md](CHANGELOG.md) section `[0.1.2]`
+- Non-retryable local body budget errors (`kind=budget`, exit 74)
+- Product knobs: CLI flags + XDG only (no product `DOCSRS_CLI_*` env)
 
 
 ## Quick Start
@@ -80,6 +92,16 @@ docsrs-cli doctor --online --json
 - From a local checkout: `cargo install --path . --locked`
 - MSRV is Rust 1.88
 - No Cargo feature flags exist in this package
+
+
+## TLS
+- **rustls only** (no `native-tls` / OpenSSL runtime); crypto provider **`ring`**
+- Minimum protocol **TLS 1.2**; peers may negotiate TLS 1.3
+- Trust store: **webpki-roots** (Mozilla); certificate validation always on
+- Production hosts require **HTTPS** (allowlist); offline tests may use loopback HTTP
+- No `danger_accept_invalid_*`, no product KeyLog, no mTLS (public docs origins)
+- Runtime posture: `docsrs-cli doctor --json` → check `http_client_posture`
+- Decision record: [`docs/decisions/0007-rustls-posture.md`](docs/decisions/0007-rustls-posture.md)
 
 
 ## Usage
@@ -102,8 +124,9 @@ docsrs-cli doctor --online --json
 - `item_type` accepts `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`/`method`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
 - `method` is an alias of `fn` for associated methods
 - Associated methods resolve to parent type pages with `#method.name` and `item_name`
+- Successful method fetches set `data.extraction` to `method`; missing anchors are `not_found` (exit 66)
 - `item_path` accepts `::` or `/` separators and optional crate prefix
-- `--suggest` on get-item 404 lists nearby symbols from `all.html`
+- `--suggest` on get-item 404 lists nearby symbols (method leaves from parent page; other kinds from `all.html`)
 - `search-in-crate <crate> [query] [--crate-version V] [--item-type K] [--limit N] [--match MODE]`
 - `--match` accepts `exact`, `prefix` (default), `substring`
 - Empty `query` lists classified items up to `--limit` (clamped to 1000)
@@ -113,7 +136,7 @@ docsrs-cli doctor --online --json
 - `doctor --online` — also probes crates.io and docs.rs DNS
 - `commands` — full command tree for agents
 - `schema --cmd <name>` — JSON Schema for a command payload
-- Schema targets: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config`
+- Schema targets: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config` plus aliases (`cache-path`, `cache-clear`, `cache-stats`, `config-path`, `config-show`, `config-init`); use `schema --cmd all --json` for the full bundle
 - `completions <shell>` — raw shell script by default; JSON only with explicit `--json`
 - Shells: `bash`, `zsh`, `fish`, `elvish`, `power-shell` (`powershell` alias)
 - `cache stats` — report entry count, bytes, and budget
@@ -127,18 +150,21 @@ docsrs-cli doctor --online --json
 - Success envelope: `schema_version`, `ok`, `command`, `data`, `duration_ms`
 - Network payloads use canonical `crate_name` (never `crate`)
 - Network payloads expose `cache_hit` for local disk cache only
-- `get-item` exposes `item_name`, optional `resolved_version`, optional `extraction`
+- `get-item` exposes `item_name`, optional `resolved_version`; method success includes `extraction=method`
+- Agents MUST reject method success when `extraction` is missing or is the legacy `item_page` value
 - `readme` exposes optional `resolved_version` (stdlib channel is `stable`)
 - `search-in-crate` echoes `match_mode` and optional `item_type`
 - `search-crates` pagination tokens live under `data.meta.next_page` / `prev_page`
 - After `--page-token`, echoed `query`/`page`/`per_page`/`sort` match the effective URL
-- Failure envelopes expose `error.kind` and `error.retryable` (never retry `kind=budget`)
+- Failure envelopes expose `schema_version`, `ok:false`, `command`, `duration_ms`, and nested `error` (`kind`, `retryable`, …)
+- Never retry `kind=budget` (exit 74); raise `--max-body-bytes` only within the hard max (above hard max is exit 65)
 
 
 ## Environment Variables
-- `DOCSRS_CLI_HOME` — sandbox root for config and cache (tests / isolation)
-- `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` — path overrides only
-- Product knobs (timeout, UA, cache TTL, retries, concurrency, lang) are not read from `DOCSRS_CLI_*` env at runtime
+- Paths: use `--config-dir` / `--cache-dir` (or platform XDG via `directories`)
+- Locale: use `--lang` or TOML `lang` (never product env)
+- Product knobs (timeout, UA, cache TTL, retries, concurrency, lang, paths) are **never** read from `DOCSRS_CLI_*` env at runtime
+- Host diagnostics only: `RUST_LOG`, `NO_COLOR`, `HTTP(S)_PROXY` / `NO_PROXY`
 - Use CLI flags and XDG `config.toml` for product settings
 - `RUST_LOG` — tracing filter (stderr diagnostics only; not product telemetry)
 - `NO_COLOR` / `CLICOLOR_FORCE` — diagnostics only
@@ -166,13 +192,13 @@ docsrs-cli doctor --online --json
 - Default body cap is 10 MiB per response
 - Default output cap is 2 MiB per emission
 - Default disk cache budget is 256 MiB soft
-- Raise caps only with explicit CLI flags or XDG `config.toml`, never above hard ceilings
+- Raise caps only with explicit CLI flags or XDG `config.toml`; values above hard ceilings fail closed (exit 65), never silent clamp
 
 
 ## Troubleshooting FAQ
-- Exit `65` means invalid input (including explicit `--timeout 0` / `--connect-timeout 0`)
-- Exit `66` means the crate or item was not found
-- Use `get-item ... --suggest` to list nearby symbols after a 404
+- Exit `65` means invalid input (including explicit `--timeout 0` / `--connect-timeout 0`, or budget flags above hard max)
+- Exit `66` means the crate or item was not found (including missing method anchors)
+- Use `get-item ... --suggest` to list nearby symbols after a 404 (method typos include parent method leaves)
 - Exit `69` means rate limit or temporary upstream outage (retryable)
 - Exit `74` with `error.kind=network` means transport failure; retry with backoff
 - Exit `74` with `error.kind=budget` means local body cap; do not retry — raise `--max-body-bytes`
@@ -210,7 +236,7 @@ docsrs-cli doctor --online --json
 
 ## Changelog
 - See [CHANGELOG.md](CHANGELOG.md) for version history
-- Current release notes for 0.1.2 live under `[0.1.2]`
+- Current release notes for 1.2.0 live under `[1.2.0]`
 
 
 ## License

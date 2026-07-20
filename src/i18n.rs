@@ -11,9 +11,8 @@
 //! # Resolution precedence
 //!
 //! 1. Explicit CLI `--lang` / config `lang` (fail-closed)
-//! 2. `DOCSRS_CLI_LANG` when not already applied via config (fail-closed)
-//! 3. OS locale via [`sys_locale::get_locale`] (soft-fallback)
-//! 4. Default `en`
+//! 2. OS locale via [`sys_locale::get_locale`] (soft-fallback)
+//! 3. Default `en`
 //!
 //! Explicit tags accept only `en` / `en-*` and exact `pt-BR` (after BCP47-ish
 //! normalization). Bare `pt` and regional Portuguese other than `pt-BR` fail
@@ -59,22 +58,17 @@ impl Locale {
 
     /// Resolve locale with fail-closed explicit tags and soft system fallback.
     ///
-    /// Precedence: `explicit` (CLI/config) → `DOCSRS_CLI_LANG` → system locale → `en`.
-    /// Explicit and env tags that are not `en` / `pt-BR` (and `en-*` variants)
+    /// Precedence: `explicit` (CLI/config) → system locale → `en`.
+    /// Explicit tags that are not `en` / `pt-BR` (and `en-*` variants)
     /// return `InvalidInput` (exit 65). Unknown system locales soft-fallback to English.
+    /// Product never reads locale from environment variables.
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] when an explicit or env tag is unsupported.
+    /// Returns [`ErrorKind::InvalidInput`] when an explicit tag is unsupported.
     pub fn resolve(explicit: Option<&str>) -> AppResult<Self> {
         if let Some(tag) = explicit {
             return Self::parse_supported(tag);
-        }
-        if let Ok(tag) = std::env::var("DOCSRS_CLI_LANG") {
-            let t = tag.trim();
-            if !t.is_empty() {
-                return Self::parse_supported(t);
-            }
         }
         Ok(Self::from_system())
     }
@@ -109,6 +103,13 @@ impl Locale {
             ErrorKind::InvalidInput,
             format!("unsupported lang '{tag}'; expected en or pt-BR"),
         ))
+    }
+
+    /// Policy test helper: env must never win over system when no explicit tag.
+    #[cfg(test)]
+    pub fn resolve_ignores_product_env_for_tests() -> AppResult<Self> {
+        // Call the public resolver with no explicit tag — same path as product.
+        Self::resolve(None)
     }
 
     /// Soft-detect from OS locale (unknown tags → English).

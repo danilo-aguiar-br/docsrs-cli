@@ -17,7 +17,7 @@
 - Sem daemon, sem sessão sticky, sem telemetria de produto
 - JSON escolhido automaticamente quando stdout não é TTY
 - HTTP público apenas contra allowlist de hosts de documentação
-- A linha de produto atual é 0.1.x
+- A linha de produto atual é 1.2.x (release 1.2.0)
 
 
 ## A Dor
@@ -40,7 +40,10 @@
 - `--page-token` ecoa `query`/`page`/`per_page`/`sort` da URL efetiva
 - `readme` com overview no docs.rs e `resolved_version`
 - `get-item` para páginas rustdoc tipadas incluindo métodos associados
-- Fetch de método isola o markdown e pode definir `data.extraction` como `method` ou `item_page`
+- Fetch de método define `data.extraction` como `method` em sucesso; `#method.X` ausente é `not_found` (exit 66), nunca sucesso falso com página pai
+- `--suggest` em 404 de method ranqueia leaves de método na página do tipo pai (e all.html para outros kinds)
+- Orçamentos acima do hard max falham fechados com exit 65 (sem clamp silencioso)
+- Envelopes de erro incluem `command` e `duration_ms` como os de sucesso
 - `search-in-crate` sobre `all.html` com `--match exact|prefix|substring`
 - `--suggest` ranqueia exact → prefix → substring → edit-distance em get-item 404
 - `item_path` aceita hífens e normaliza para underscores nos paths rustc
@@ -53,14 +56,23 @@
 - `cache` e `config` para manutenção XDG sem segredos
 
 
-## Novidades em 0.1.2
-- Eco pela URL efetiva em `--page-token` (e `planned_params` no dry-run)
-- Extração de método com `data.extraction` opcional
-- Erros locais de budget de body não retryable (`kind=budget`)
-- `--suggest` em cascata, normalização de hífen e scrub de chrome rustdoc
+## Novidades em 1.2.0
+- Method fail-closed: `#method.X` ausente retorna `not_found` (exit 66), não sucesso falso com página pai
+- `--suggest` ranqueia leaves de método no HTML do tipo pai em typos
+- Envelopes de erro carregam `command` + `duration_ms` (paridade com sucesso)
+- Valores acima do hard max de body/output falham com exit 65 (sem clamp silencioso)
+- URL 404 de method mantém o primeiro kind de probe (`struct`), não o último
+- Dry-run documenta `validation=url_shape_only` e probes de parent kind
+- Schemas offline batem com `schema --cmd all` (19 nomes wire incluindo aliases)
+- Notas completas em [CHANGELOG.pt-BR.md](CHANGELOG.pt-BR.md) seção `[1.2.0]`
+
+## Destaques anteriores (1.1.x)
+- Paths curtos de método (`Runtime::new`) resolvem via all.html
+- Açúcar `crate@version` em readme / get-item / search-in-crate
+- Eco de URL efetiva em `--page-token`, `--suggest` em cascata, normalização de hífen
 - `--timeout 0` / `--connect-timeout 0` fail-closed (exit 65)
-- Ritual humano de smoke: `scripts/smoke-live.sh` (sem CI)
-- Notas completas em [CHANGELOG.pt-BR.md](CHANGELOG.pt-BR.md) seção `[0.1.2]`
+- Budget local não retryable (`kind=budget`, exit 74)
+- Knobs de produto: flags CLI + XDG apenas (sem env `DOCSRS_CLI_*` de produto)
 
 
 ## Início Rápido
@@ -80,6 +92,16 @@ docsrs-cli doctor --online --json
 - Do checkout local: `cargo install --path . --locked`
 - MSRV é Rust 1.88
 - Este pacote não tem feature flags de Cargo
+
+
+## TLS
+- **Somente rustls** (sem `native-tls` / OpenSSL em runtime); provider crypto **`ring`**
+- Protocolo mínimo **TLS 1.2**; peers podem negociar TLS 1.3
+- Trust store: **webpki-roots** (Mozilla); validação de certificado sempre ligada
+- Hosts de produção exigem **HTTPS** (allowlist); testes offline podem usar HTTP em loopback
+- Sem `danger_accept_invalid_*`, sem KeyLog de produto, sem mTLS (origens públicas de docs)
+- Postura em runtime: `docsrs-cli doctor --json` → check `http_client_posture`
+- Decisão: [`docs/decisions/0007-rustls-posture.pt-BR.md`](docs/decisions/0007-rustls-posture.pt-BR.md)
 
 
 ## Uso
@@ -102,8 +124,9 @@ docsrs-cli doctor --online --json
 - `item_type` aceita `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`/`method`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
 - `method` é alias de `fn` para métodos associados
 - Métodos associados resolvem para a página do tipo pai com `#method.name` e `item_name`
+- Sucesso de method define `data.extraction` como `method`; âncoras ausentes são `not_found` (exit 66)
 - `item_path` aceita separadores `::` ou `/` e prefixo opcional do crate
-- `--suggest` em get-item 404 lista símbolos próximos em `all.html`
+- `--suggest` em get-item 404 lista símbolos próximos (leaves de method na página pai; outros kinds em `all.html`)
 - `search-in-crate <crate> [query] [--crate-version V] [--item-type K] [--limit N] [--match MODE]`
 - `--match` aceita `exact`, `prefix` (padrão), `substring`
 - `query` vazio lista itens classificados até `--limit` (clamp em 1000)
@@ -113,7 +136,7 @@ docsrs-cli doctor --online --json
 - `doctor --online` — também sonda DNS de crates.io e docs.rs
 - `commands` — árvore completa de comandos para agentes
 - `schema --cmd <name>` — JSON Schema do payload de um comando
-- Alvos de schema: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config`
+- Alvos de schema: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config` mais aliases (`cache-path`, `cache-clear`, `cache-stats`, `config-path`, `config-show`, `config-init`); use `schema --cmd all --json` para o bundle completo
 - `completions <shell>` — script cru por padrão; JSON só com `--json` explícito
 - Shells: `bash`, `zsh`, `fish`, `elvish`, `power-shell` (alias `powershell`)
 - `cache stats` — reporta contagem, bytes e orçamento
@@ -127,18 +150,21 @@ docsrs-cli doctor --online --json
 - Envelope de sucesso: `schema_version`, `ok`, `command`, `data`, `duration_ms`
 - Payloads de rede usam `crate_name` canônico (nunca `crate`)
 - Payloads de rede expõem `cache_hit` só para cache local em disco
-- `get-item` expõe `item_name`, `resolved_version` opcional e `extraction` opcional
+- `get-item` expõe `item_name`, `resolved_version` opcional; sucesso de method inclui `extraction=method`
+- Agentes DEVEM rejeitar sucesso de method quando `extraction` estiver ausente ou for o valor legado `item_page`
 - `readme` expõe `resolved_version` opcional (canal da stdlib é `stable`)
 - `search-in-crate` ecoa `match_mode` e `item_type` opcional
 - Tokens de paginação de `search-crates` ficam em `data.meta.next_page` / `prev_page`
 - Após `--page-token`, o eco de `query`/`page`/`per_page`/`sort` bate com a URL efetiva
-- Envelopes de falha expõem `error.kind` e `error.retryable` (nunca retente `kind=budget`)
+- Envelopes de falha expõem `schema_version`, `ok:false`, `command`, `duration_ms` e `error` aninhado (`kind`, `retryable`, …)
+- Nunca retente `kind=budget` (exit 74); aumente `--max-body-bytes` só dentro do hard max (acima do hard max é exit 65)
 
 
 ## Variáveis de Ambiente
-- `DOCSRS_CLI_HOME` — raiz de sandbox para config e cache (testes / isolamento)
-- `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR` — overrides apenas de path
-- Knobs de produto (timeout, UA, TTL de cache, retries, concurrency, lang) não são lidos de `DOCSRS_CLI_*` em runtime
+- Paths: use `--config-dir` / `--cache-dir` (ou XDG da plataforma via `directories`)
+- Locale: use `--lang` ou TOML `lang` (nunca env de produto)
+- Knobs de produto (timeout, UA, TTL de cache, retries, concurrency, lang, paths) **nunca** são lidos de `DOCSRS_CLI_*` em runtime
+- Só host/diagnostics: `RUST_LOG`, `NO_COLOR`, `HTTP(S)_PROXY` / `NO_PROXY`
 - Use flags CLI e XDG `config.toml` para settings de produto
 - `RUST_LOG` — filtro de tracing (só stderr; sem telemetria de produto)
 - `NO_COLOR` / `CLICOLOR_FORCE` — apenas diagnósticos
@@ -166,13 +192,13 @@ docsrs-cli doctor --online --json
 - Teto padrão de body é 10 MiB por resposta
 - Teto padrão de output é 2 MiB por emissão
 - Orçamento soft padrão de cache em disco é 256 MiB
-- Eleve tetos só com flags CLI ou XDG `config.toml`, nunca acima do hard ceiling
+- Eleve tetos só com flags CLI ou XDG `config.toml`; valores acima do hard ceiling falham fechados (exit 65), nunca clamp silencioso
 
 
 ## FAQ de Troubleshooting
-- Exit `65` significa input inválido (incluindo `--timeout 0` / `--connect-timeout 0` explícitos)
-- Exit `66` significa crate ou item não encontrado
-- Use `get-item ... --suggest` para listar símbolos próximos após 404
+- Exit `65` significa input inválido (incluindo `--timeout 0` / `--connect-timeout 0` explícitos, ou flags de budget acima do hard max)
+- Exit `66` significa crate ou item não encontrado (incluindo âncoras de method ausentes)
+- Use `get-item ... --suggest` para listar símbolos próximos após 404 (typos de method incluem leaves da página pai)
 - Exit `69` significa rate limit ou outage temporário (retryable)
 - Exit `74` com `error.kind=network` significa falha de transporte; retente com backoff
 - Exit `74` com `error.kind=budget` significa teto local de body; não retente — aumente `--max-body-bytes`
@@ -210,7 +236,7 @@ docsrs-cli doctor --online --json
 
 ## Changelog
 - Veja [CHANGELOG.pt-BR.md](CHANGELOG.pt-BR.md) para o histórico de versões
-- Notas da release 0.1.2 ficam sob `[0.1.2]`
+- Notas da release 1.2.0 ficam sob `[1.2.0]`
 
 
 ## Licença

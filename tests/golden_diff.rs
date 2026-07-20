@@ -84,6 +84,7 @@ fn golden_get_item_markdown_structure() {
         title: "tokio::runtime::Runtime (struct)".into(),
         cache_hit: false,
         extraction: None,
+        resolved_item_path: None,
     };
     // Prefer stable synthetic body for exact golden match.
     let md = render_item_markdown(&data);
@@ -97,14 +98,15 @@ fn golden_search_in_crate_markdown() {
     let html = include_str!("fixtures/docs_rs/all_html_sample.html");
     let data = search_in_crate_from_html(
         html,
-        "demo",
-        "1.0.0",
-        "Client",
+        &docsrs_cli::domain::CrateName::parse("demo").unwrap(),
+        &docsrs_cli::domain::VersionArg::parse("1.0.0").unwrap(),
+        &docsrs_cli::domain::SearchQuery::parse("Client", false).unwrap(),
         Some(ItemKind::Struct),
         10,
         docsrs_cli::domain::MatchMode::Prefix,
         "https://docs.rs/demo/1.0.0/demo/all.html",
         false,
+        &docsrs_cli::shutdown::CancelFlag::new(),
     )
     .unwrap();
     let md = render_search_in_crate_markdown(&data);

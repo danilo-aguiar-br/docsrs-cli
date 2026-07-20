@@ -12,8 +12,8 @@
 - Timeout wall-clock defaults to a product-safe second budget via config
 - Cache TTL defaults to 86400 seconds
 - Cache soft budget defaults to 256 MiB
-- Max body defaults to 10 MiB hard ceiling
-- Max output defaults to 2 MiB hard ceiling
+- Max body defaults to 10 MiB hard ceiling (values above hard max fail closed with exit 65)
+- Max output defaults to 2 MiB hard ceiling (values above hard max fail closed with exit 65)
 - `search-in-crate --match` defaults to `prefix`
 - `search-in-crate --limit` defaults to 100 and clamps at 1000
 - JSON auto-selects on non-TTY stdout (except raw `completions`)
@@ -75,7 +75,32 @@ docsrs-cli get-item async-trait attribute async_trait --json
 docsrs-cli get-item tokio method runtime::Runtime::new --json
 docsrs-cli get-item tokio fn runtime::Runtime::new --json
 # parent type page + #method.new; payload includes item_name, optional resolved_version
-# data.extraction is method when markdown is scoped to the method body
+# data.extraction is method on success; missing #method.X is not_found (exit 66), never item_page success
+```
+
+## How To Recover From a Method Typo
+- Problem: agent typed `Runtime::neww` and must not accept a parent-page false success
+```bash
+docsrs-cli get-item tokio method Runtime::neww --suggest --json
+# exit 66, ok=false, error.kind=not_found; message may include ranked method leaves (new, …)
+# error envelope top-level has command, duration_ms, and nested error
+# never treat extraction=item_page as method success (removed in 1.2.0)
+```
+
+## How To Plan a Method URL Offline
+- Problem: inspect planned parent kind and probes without network
+```bash
+docsrs-cli --dry-run get-item tokio method runtime::Runtime::neww --json
+# planned_params.validation=url_shape_only; planned_parent_kind + parent_kind_probe present
+# dry-run does not prove the remote anchor exists
+```
+
+## How To Fail Closed on Budget Hard Max Overshoot
+- Problem: agent must not accept silent clamp when flags exceed hard max
+```bash
+docsrs-cli --max-body-bytes 999999999 version --json
+docsrs-cli --max-output-bytes 999999999 version --json
+# both exit 65 invalid_input (no silent clamp to 10 MiB / 2 MiB)
 ```
 
 ## How To Confirm Rustdoc Chrome Scrub
@@ -206,9 +231,9 @@ docsrs-cli config init --force --json
 ```bash
 docsrs-cli doctor --json
 docsrs-cli doctor --online --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli config init --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --json
-DOCSRS_CLI_HOME=/tmp/docsrs-audit docsrs-cli doctor --online --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache config init --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache doctor --json
+docsrs-cli --config-dir /tmp/docsrs-audit/config --cache-dir /tmp/docsrs-audit/cache doctor --online --json
 # treat healthy only when process exit is 0 and both top-level ok and data.ok are true
 ```
 

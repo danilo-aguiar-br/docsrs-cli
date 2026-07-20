@@ -1,6 +1,6 @@
 [package]
 name = "docsrs-cli"
-version = "0.1.2"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One-shot stdin/stdout CLI that fetches crates.io and docs.rs docs for LLM agents without a daemon"
@@ -25,6 +25,16 @@ exclude = [
     "memory/",
     "target/",
     "rust_out",
+    # GraphRAG / enrich-queue SQLite — qualquer pasta (não empacotar no crate)
+    "**/graphrag.sqlite",
+    "**/graphrag.sqlite-shm",
+    "**/graphrag.sqlite-wal",
+    "**/.enrich-queue.sqlite",
+    "**/.enrich-queue.sqlite-shm",
+    "**/.enrich-queue.sqlite-wal",
+    "*.sqlite",
+    "*.sqlite-shm",
+    "*.sqlite-wal",
 ]
 
 [badges]
@@ -53,21 +63,49 @@ targets = [
 ]
 
 [dependencies]
-# Proc-macro only: embeds Mermaid diagrams into rustdoc HTML (docs.rs / cargo doc).
-aquamarine = "0.6"
-clap = { version = "4", features = ["derive", "env", "cargo", "wrap_help", "color", "unicode"] }
+clap = { version = "4", features = ["derive", "cargo", "wrap_help", "color", "unicode"] }
 clap_complete = "4"
 # Multi-thread runtime is the product default (I/O workers + spawn_blocking CPU).
-# See `src/main.rs`, `src/concurrency.rs`, and Rules Rust parallelism audit.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "signal", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
+# Explicit features only (no `full`): rt + multi-thread + macros + time + signal + sync.
+# `net`/`io-util` are pulled transitively by reqwest/hyper when needed; product code
+# does not bind sockets itself (one-shot client). See `src/main.rs` Builder.
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "signal",
+    "sync",
+] }
+# rustls-only TLS; HTTP/2; system proxy (HTTP_PROXY / HTTPS_PROXY / NO_PROXY);
+# gzip+brotli decode; streaming body for budget caps. No cookies, no native-tls.
+# Direct rustls pin (floor ≥0.23.18; ADR 0007): ring provider installed in main.
+# reqwest uses `rustls-no-provider` so aws-lc is never linked (deny.toml bans it).
+# brotli: feature alone is a no-op if Accept-Encoding is set without `br` — client
+# sends `gzip, br` explicitly (SCRAPE-S-004). Body stream cap still bounds bombs.
+rustls = { version = "0.23.18", default-features = false, features = [
+    "std",
+    "tls12",
+    "ring",
+] }
+# reqwest 0.13: feature `rustls` defaults to aws-lc; ADR 0007 requires ring-only.
+# Use `rustls-no-provider` + process-wide ring CryptoProvider (src/main.rs).
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "http2",
+    "system-proxy",
+    "json",
+    "gzip",
+    "brotli",
+    "stream",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 # Explicit features: env-filter + fmt + registry; bridge `log` deps (reqwest/html).
 # No `json`/`chrono` file rotation — agent CLI writes diagnostics to stderr only.
-# See `src/telemetry.rs` for OOS notes (OTLP, reload, tracing-appender).
+# See `src/diagnostics.rs` for OOS notes (OTLP, reload, tracing-appender).
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "std",
     "fmt",
@@ -79,8 +117,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 directories = "6"
 sys-locale = "0.3"
 toml = "0.8"
+# WHATWG URL parsing (request construction, final_url, cache provenance).
+# No `serde` feature: wire DTOs serialize URL fields as plain String (ADR 0006 / 0008).
+# chrono / uuid / rust_decimal intentionally absent — see docs/decisions/0008-domain-types-posture.md
 url = "2"
-scraper = "0.22"
+scraper = "0.27"
 htmd = "0.5"
 bytes = "1"
 futures-util = "0.3"
@@ -89,6 +130,7 @@ sha2 = "0.10"
 fs4 = { version = "1.1.0", features = ["sync"] }
 # CPU-bound fan-out for large all.html hit scans (gated by size threshold).
 rayon = "1"
+httpdate = "1"
 
 [dev-dependencies]
 wiremock = "0.6"
@@ -97,20 +139,19 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", 
 tempfile = "3"
 # POSIX kill(2) for signal harness tests — no external `kill` CLI (native-crate rules).
 libc = "0.2"
+httpdate = "1"
 
 # Release profile tuned for a one-shot CLI (network-bound hot path).
-# Latency rules applied where product-appropriate:
-#   opt-level=3, lto="fat", codegen-units=1, panic="abort"
-# Strip symbols after profiling (product ships stripped; no in-tree flamegraph).
-# Overflow checks stay at Cargo release defaults (off).
-# OOS for this CLI (no HFT / long-lived daemon): target-cpu=native, PGO, BOLT,
-# mimalloc/jemalloc, mlockall, huge pages, isolcpus — would need measured P99.
+# Latency rules: opt-level=3, lto="fat", codegen-units=1, panic="abort", strip.
+# overflow-checks = true (SEC-008): fail-closed arithmetic on external sizes.
+# OOS: target-cpu=native, PGO, BOLT, custom allocators (not measured for this CLI).
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+overflow-checks = true
 
 # Keep dependency crates at full optimization even if a future override changes the root.
 [profile.release.package."*"]

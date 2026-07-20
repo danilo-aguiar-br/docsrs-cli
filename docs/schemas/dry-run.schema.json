@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli dry-run success envelope fragment",
   "type": "object",
-  "description": "When global --dry-run is set on a network command, success envelopes include dry_run=true and data with planned_url plus planned_params. planned_params always use crate_name (never crate).",
+  "description": "When global --dry-run is set on a network command, success envelopes include dry_run=true and data with planned_url plus planned_params. planned_params always use crate_name (never crate). For get-item method dry-run, planned_params may also include validation=url_shape_only, planned_parent_kind, and parent_kind_probe (method-specific; not required).",
   "required": [
     "schema_version",
     "ok",
@@ -46,8 +46,24 @@
         },
         "planned_params": {
           "type": "object",
-          "description": "Command-specific planned fields; crate fields use crate_name. search-in-crate planned limit is clamped to 1000 even if --limit is higher. Keys vary by command, so additionalProperties remains true only on this bag.",
-          "additionalProperties": true
+          "description": "Command-specific planned fields; crate fields use crate_name. search-in-crate planned limit is clamped to 1000 even if --limit is higher. Keys vary by command, so additionalProperties remains true only on this bag. For get-item method dry-run, optional keys include validation (url_shape_only), planned_parent_kind, and parent_kind_probe (array of kind strings); these are method-specific and not required.",
+          "additionalProperties": true,
+          "properties": {
+            "validation": {
+              "type": "string",
+              "const": "url_shape_only",
+              "description": "Present on get-item method dry-run: plan validates URL shape only (does not verify remote existence)."
+            },
+            "planned_parent_kind": {
+              "type": "string",
+              "description": "Present on get-item method dry-run: default parent kind used to build planned_url (live fetch may probe other kinds)."
+            },
+            "parent_kind_probe": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Present on get-item method dry-run: ordered parent kind strings live fetch may probe on 404."
+            }
+          }
         }
       }
     }

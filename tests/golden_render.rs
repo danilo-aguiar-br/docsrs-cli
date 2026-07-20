@@ -38,6 +38,7 @@ fn golden_search_markdown_contains_sections() {
             prev_page: None,
         },
         cache_hit: false,
+        truncated: false,
     };
     let md = render_search_markdown(&data);
     assert!(md.contains("# Crate Search Results"));
@@ -81,6 +82,7 @@ fn golden_item_markdown() {
         title: "tokio::runtime::Runtime (struct)".into(),
         cache_hit: false,
         extraction: None,
+        resolved_item_path: None,
     };
     let md = render_item_markdown(&data);
     assert!(md.contains("# tokio::runtime::Runtime (struct)"));
@@ -90,14 +92,15 @@ fn golden_item_markdown() {
 #[test]
 fn golden_search_in_crate_from_fixture() {
     let html = include_str!("fixtures/docs_rs/all_html_sample.html");
+    let base = url::Url::parse("https://docs.rs/demo/1.0.0/demo/all.html").unwrap();
     let hits = parse_all_html_hits(
         html,
-        "demo",
-        "1.0.0",
-        "Client",
+        &base,
+        &docsrs_cli::domain::SearchQuery::parse("Client", false).unwrap(),
         None,
         10,
         docsrs_cli::domain::MatchMode::Prefix,
+        &docsrs_cli::shutdown::CancelFlag::new(),
     )
     .unwrap();
     let data = SearchInCrateData {

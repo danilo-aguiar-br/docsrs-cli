@@ -1,13 +1,12 @@
 //! Offline smoke tests for CLI surface.
 
-use std::process::{Command, Stdio};
+mod common;
+
+use std::process::Command;
 
 fn bin() -> Command {
-    // Spawns the product under test (accepted Command::new). stdin closed per native-crate rules.
-    let mut c = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"));
-    c.env_remove("RUST_LOG");
-    c.stdin(Stdio::null());
-    c
+    // Product under test only (absolute CARGO_BIN_EXE). Stdio + env via common.
+    common::docsrs_cli_cmd()
 }
 
 #[test]
@@ -17,7 +16,7 @@ fn version_json() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["name"], "docsrs-cli");
-    assert_eq!(v["data"]["version"], "0.1.2");
+    assert_eq!(v["data"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(v["data"]["msrv"], "1.88.0");
     assert!(v.get("schema_version").is_some());
     assert!(v.get("duration_ms").is_some());
@@ -33,7 +32,7 @@ fn version_text() {
         .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("docsrs-cli 0.1.2"));
+    assert!(s.contains(concat!("docsrs-cli ", env!("CARGO_PKG_VERSION"))));
 }
 
 #[test]
@@ -404,8 +403,8 @@ fn config_path_show_init_lifecycle() {
     );
     let path_v: serde_json::Value = serde_json::from_slice(&path_out.stdout).unwrap();
     assert_eq!(path_v["command"], "config-path");
-    assert_eq!(path_v["data"]["config_source"], "cli-or-env");
-    assert_eq!(path_v["data"]["cache_source"], "cli-or-env");
+    assert_eq!(path_v["data"]["config_source"], "cli");
+    assert_eq!(path_v["data"]["cache_source"], "cli");
     assert_eq!(path_v["data"]["config_file_exists"], false);
     assert_eq!(path_v["data"]["dotenv_runtime"], false);
 
@@ -445,7 +444,7 @@ fn config_path_show_init_lifecycle() {
     let show_v: serde_json::Value = serde_json::from_slice(&show_out.stdout).unwrap();
     assert_eq!(show_v["command"], "config-show");
     assert_eq!(show_v["data"]["config_toml_loaded"], true);
-    assert_eq!(show_v["data"]["config_path_source"], "cli-or-env");
+    assert_eq!(show_v["data"]["config_path_source"], "cli");
 
     let again = bin()
         .args([
@@ -608,7 +607,7 @@ fn dry_run_search_crates_alphabetical() {
 }
 
 #[test]
-fn dry_run_search_crates_page_zero_clamps_params_and_url() {
+fn dry_run_search_crates_page_zero_is_invalid_input() {
     let out = bin()
         .args([
             "search-crates",
@@ -616,19 +615,67 @@ fn dry_run_search_crates_page_zero_clamps_params_and_url() {
             "--page",
             "0",
             "--per-page",
-            "0",
+            "10",
             "--dry-run",
             "--json",
         ])
         .output()
         .unwrap();
-    assert!(out.status.success());
+    assert_eq!(out.status.code(), Some(65));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["data"]["planned_params"]["page"], 1);
-    assert_eq!(v["data"]["planned_params"]["per_page"], 1);
-    let url = v["data"]["planned_url"].as_str().unwrap_or("");
-    assert!(url.contains("page=1"), "url={url}");
-    assert!(url.contains("per_page=1"), "url={url}");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "invalid_input");
+}
+
+#[test]
+fn dry_run_search_crates_per_page_over_max_is_invalid_input() {
+    let out = bin()
+        .args([
+            "search-crates",
+            "serde",
+            "--per-page",
+            "200",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "invalid_input");
+}
+
+#[test]
+fn clap_invalid_timeout_json_exit_64() {
+    let out = bin()
+        .args(["--timeout", "abc", "--json", "version"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "usage");
+    assert_eq!(v["error"]["code"], 64);
+}
+
+#[test]
+fn search_in_crate_module_filter_rejected() {
+    let out = bin()
+        .args([
+            "search-in-crate",
+            "serde",
+            "de",
+            "--item-type",
+            "module",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "invalid_input");
+    let msg = v["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("get-item"), "msg={msg}");
 }
 
 #[test]

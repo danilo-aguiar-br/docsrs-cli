@@ -17,8 +17,8 @@
 //!   body near `HARD_MAX_BODY_BYTES` (10 MiB body + DOM + markdown ≈ 2–3× peak).
 //!   Re-measure with `/usr/bin/time -v docsrs-cli search-in-crate …` when the
 //!   body cap or scraper stack changes materially.
-//! - **Override:** CLI `--max-concurrency=N`, env `DOCSRS_CLI_MAX_CONCURRENCY`,
-//!   or `max_concurrency` in XDG `config.toml`. `0` / omit = auto formula.
+//! - **Override:** CLI `--max-concurrency=N` or `max_concurrency` in XDG
+//!   `config.toml` only (not product `DOCSRS_CLI_*` env). `0` / omit = auto.
 
 use std::fs;
 use std::sync::Arc;
@@ -79,12 +79,20 @@ impl ConcurrencyBudget {
     }
 
     /// Acquire one permit (RAII). Prefer [`Self::run_cpu_bound`] for spawn paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::Internal`] when the semaphore is closed (should not
+    /// happen in the one-shot lifecycle). The `AcquireError` is preserved as
+    /// [`std::error::Error::source`].
     pub async fn acquire_owned(&self) -> AppResult<OwnedSemaphorePermit> {
         self.semaphore
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| AppError::new(ErrorKind::Internal, "concurrency semaphore closed"))
+            .map_err(|e| {
+                AppError::with_source(ErrorKind::Internal, "concurrency semaphore closed", e)
+            })
     }
 
     /// Run CPU / blocking work on Tokio's blocking pool under this budget.
@@ -111,12 +119,12 @@ impl ConcurrencyBudget {
             Err(e) if e.is_cancelled() => Err(AppError::interrupted()),
             Err(e) if e.is_panic() => Err(AppError::with_source(
                 ErrorKind::Internal,
-                "CPU worker panicked during parse",
+                "cpu worker panicked during parse",
                 e,
             )),
             Err(e) => Err(AppError::with_source(
                 ErrorKind::Internal,
-                "CPU worker join failed",
+                "cpu worker join failed",
                 e,
             )),
         }
@@ -151,13 +159,25 @@ pub fn auto_max_concurrency() -> usize {
     cpus.min(ram_based).clamp(1, MAX_AUTO_CONCURRENCY)
 }
 
-/// Worker thread hint for the multi-thread runtime (same as auto concurrency
-/// floor on CPUs, independent of RAM clamp for the blocking pool).
+/// Worker thread count for the multi-thread Tokio runtime (I/O + signal tasks).
+///
+/// Same floor as auto concurrency on CPUs, independent of the RAM clamp used for
+/// the CPU budget (I/O workers stay available while blocking parse runs).
+/// Used by `src/main.rs` `Builder::worker_threads`.
 pub fn runtime_worker_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
         .clamp(1, MAX_AUTO_CONCURRENCY)
+}
+
+/// Cap for Tokio's `spawn_blocking` pool (Rules Rust — rede / paralelismo).
+///
+/// Aligns with [`MAX_EXPLICIT_CONCURRENCY`] so an operator override cannot
+/// schedule more blocking tasks than the product ever admits via
+/// [`ConcurrencyBudget`]. Default Tokio (512) is far above one-shot CLI needs.
+pub fn max_blocking_threads() -> usize {
+    MAX_EXPLICIT_CONCURRENCY
 }
 
 /// Linux `MemAvailable` in MiB; `None` when unavailable.
@@ -194,6 +214,13 @@ mod tests {
     fn auto_is_at_least_one() {
         assert!(auto_max_concurrency() >= 1);
         assert!(auto_max_concurrency() <= MAX_AUTO_CONCURRENCY);
+    }
+
+    #[test]
+    fn runtime_and_blocking_pool_caps_are_bounded() {
+        let w = runtime_worker_threads();
+        assert!((1..=MAX_AUTO_CONCURRENCY).contains(&w));
+        assert_eq!(max_blocking_threads(), MAX_EXPLICIT_CONCURRENCY);
     }
 
     #[test]

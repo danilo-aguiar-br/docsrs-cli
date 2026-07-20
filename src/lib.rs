@@ -20,7 +20,8 @@
 //! # HTTP retry (Rules Rust — retry/backoff)
 //!
 //! Product GETs use [`retry::RetryConfig`]: exponential full-jitter backoff,
-//! `Retry-After` delta-seconds on 429/503, no retry on permanent 4xx/parse.
+//! `Retry-After` delta-seconds **or** HTTP-date on 429/503, dual budget
+//! (`max_attempts` + `max_elapsed_ms`), no retry on permanent 4xx/parse/budget.
 //! Kill switch: `--disable-retry` / TOML `disable_retry` / `max_retries=0`. Policy is
 //! single-layer inside [`http::HttpClient`] only.
 //!
@@ -32,13 +33,16 @@
 //!
 //! # Safety
 //!
-//! - Product code in `src/` contains no `unsafe` blocks.
+//! - Product code in `src/` contains no `unsafe` blocks (`#![forbid(unsafe_code)]`).
+//! - External input is validated at boundaries (domain newtypes, origin allowlist, body caps).
+//! - Threat model (STRIDE / accepted risks): `docs/decisions/0004-threat-model.md`.
+//! - Regexes compile with bounded `size_limit` / `dfa_size_limit` (ReDoS posture).
 //! - docs.rs builds enable `doc_cfg` via `#![cfg_attr(docsrs, feature(doc_cfg))]`
 //!   (post-2025 merge of `doc_auto_cfg` into `doc_cfg`). Local `cargo +stable doc`
 //!   does not require the nightly feature gate.
 //! - TLS is rustls-only; HTTP product methods are GET-only against an allowlist.
-//! - Mermaid diagrams for the agent lifecycle live on [`run`] via `aquamarine`
-//!   (attribute macros apply to items, not the crate root).
+//! - Agent lifecycle is documented as a Mermaid sequence fence on [`run`]
+//!   (plain rustdoc code block — no proc-macro renderer).
 //!
 //! # Examples
 //!
@@ -60,6 +64,10 @@
 //! assert!(ErrorKind::Timeout.retryable());
 //! ```
 
+// Defensive security (Rules Rust / ADR 0009): product has no FFI; forbid all `unsafe`.
+// Integration tests may use `unsafe` only for the Unix signal harness (`libc::kill`).
+// Loopback mocks use CLI/XDG `allow_loopback` — never `env::set_var`.
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(rustdoc::missing_crate_level_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -75,48 +83,65 @@ pub mod cli;
 pub mod concurrency;
 pub mod config;
 pub mod crates_io;
+pub mod diagnostics;
 pub mod docs_rs;
+mod doctor;
+mod meta_cmds;
+mod ops;
 pub mod domain;
 pub mod error;
 pub mod http;
 pub mod i18n;
 pub mod item_kind;
+mod output;
 pub mod platform;
 pub mod render;
 pub mod retry;
 pub mod shutdown;
-pub mod telemetry;
+mod suggest;
 
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{CommandFactory, Parser};
-use serde::Serialize;
+use clap::Parser;
 use tokio::time::Instant;
 
-use crate::cache::DiskCache;
-use crate::cli::{CacheAction, Cli, Commands, ConfigAction};
-use crate::config::{
-    APP_NAME, APP_VERSION, Config, MSRV, SCHEMA_VERSION, config_path_data, docs_origin_for_crate,
-    init_config_toml,
+use crate::cli::{Cli, Commands};
+use crate::config::{APP_NAME, APP_VERSION, Config, MSRV, validate_user_agent};
+use crate::diagnostics::init_tracing;
+use crate::error::{
+    AppError, AppResult, EXIT_BROKEN_PIPE, EXIT_USAGE, ErrorKind,
 };
-use crate::domain::{CrateName, ItemPath, SearchQuery, VersionArg};
-use crate::error::{AppError, AppResult, ErrorKind};
-use crate::http::HttpClient;
 use crate::i18n::Locale;
-use crate::item_kind::ItemKind;
-use crate::render::{
-    apply_truncation_to_item, apply_truncation_to_readme, dry_run_envelope, error_envelope,
-    render_item_markdown, render_readme_markdown, render_search_in_crate_markdown,
-    render_search_markdown, success_envelope,
-};
+use crate::render::{error_envelope, success_envelope};
 use crate::shutdown::{
-    CancelFlag, ProgressGuard, duration_ms, flush_stdio, race_op_with_cancel_and_deadline,
+    CancelFlag, duration_ms, flush_stdio, race_op_with_cancel_and_deadline,
     spawn_double_interrupt_force_exit,
 };
-use crate::telemetry::init_tracing;
+
+/// True when argv requests JSON or stdout is non-TTY (agent mode) — used before full parse.
+fn argv_wants_json_mode(args: &[std::ffi::OsString], stdout_is_terminal: bool) -> bool {
+    let has_json = args.iter().any(|a| a == "--json");
+    let has_human_format = args.windows(2).any(|w| {
+        w[0] == "--format"
+            && w[1]
+                .to_str()
+                .is_some_and(|v| v == "text" || v == "markdown" || v == "md")
+    }) || args.iter().any(|a| {
+        a.to_str().is_some_and(|s| {
+            s.starts_with("--format=")
+                && (s.contains("text") || s.contains("markdown") || s.contains("md"))
+        })
+    });
+    if has_json {
+        return true;
+    }
+    if has_human_format {
+        return false;
+    }
+    !stdout_is_terminal
+}
 
 /// Parse argv and execute one command. Returns process exit code.
 ///
@@ -125,7 +150,9 @@ use crate::telemetry::init_tracing;
 ///
 /// # Lifecycle
 ///
-/// ```mermaid
+/// Lifecycle (BORN → EXECUTE → FINALIZE → DIE), Mermaid form for agent readers:
+///
+/// ```text
 /// sequenceDiagram
 ///   participant A as Agent
 ///   participant C as docsrs-cli
@@ -137,7 +164,6 @@ use crate::telemetry::init_tracing;
 ///   C->>C: FINALIZE flush
 ///   C->>C: DIE exit code
 /// ```
-#[cfg_attr(doc, aquamarine::aquamarine)]
 pub async fn run<I, T>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = T>,
@@ -173,29 +199,43 @@ where
     Out: Write,
     ErrW: Write,
 {
-    let cli = match Cli::try_parse_from(args) {
+    // Collect args once so we can detect --json / agent mode before parse fails.
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    let agent_json = argv_wants_json_mode(&args, stdout_is_terminal);
+
+    let cli = match Cli::try_parse_from(&args) {
         Ok(c) => c,
         Err(e) => {
-            // clap prints help/usage itself to its preferred stream
+            // Help / version display: human text, success.
+            if !e.use_stderr() {
+                let _ = e.print();
+                flush_stdio();
+                return ExitCode::SUCCESS;
+            }
+            // Contract: usage failures are exit EXIT_USAGE with JSON envelope in agent/JSON mode.
+            let msg = e.to_string();
+            if agent_json {
+                let err = AppError::new(ErrorKind::Usage, msg);
+                let _ = output::write_json(&mut stdout, &error_envelope(&err, "usage", 0));
+                flush_stdio();
+                return ExitCode::from(EXIT_USAGE);
+            }
+            // Human TTY: print clap rendering to stderr, still EXIT_USAGE (unified contract).
             let _ = e.print();
             flush_stdio();
-            return if e.use_stderr() {
-                ExitCode::from(2)
-            } else {
-                ExitCode::SUCCESS
-            };
+            return ExitCode::from(EXIT_USAGE);
         }
     };
 
     let code = match run_cli(cli, &mut stdout, &mut stderr, stdout_is_terminal).await {
         Ok(code) => code,
-        Err(err) if err.kind() == ErrorKind::BrokenPipe => ExitCode::from(141),
+        Err(err) if err.kind() == ErrorKind::BrokenPipe => ExitCode::from(EXIT_BROKEN_PIPE),
         Err(err) => {
             // Domain errors should already have been turned into ExitCode via
             // `emit_error` inside `run_cli`. This path is a last-resort safety net
             // (preserves kind exit code; never hardcodes 70).
             tracing::error!(
-                target: "docsrs_cli::telemetry",
+                target: "docsrs_cli::diagnostics",
                 error = %err,
                 kind = ?err.kind(),
                 "error escaped structured emit path"
@@ -216,14 +256,17 @@ async fn run_cli<Out: Write, ErrW: Write>(
     stderr: &mut ErrW,
     stdout_is_terminal: bool,
 ) -> Result<ExitCode, AppError> {
+    let wire = cli.wire_command();
     if let Err(e) = cli.validate_format_conflict() {
-        return Ok(emit_error(
+        return Ok(meta_cmds::emit_error(
             &cli,
             &e,
             Locale::En,
             stdout,
             stderr,
             stdout_is_terminal,
+            wire,
+            0,
         ));
     }
 
@@ -231,41 +274,51 @@ async fn run_cli<Out: Write, ErrW: Write>(
 
     // Config load must go through `emit_error` so exit 78 / JSON envelope are correct.
     // A bare `?` would bubble to `run_with_io` and historically forced exit 70.
-    let mut cfg = match Config::load_with_cache_dir(cli.config_dir.clone(), cli.cache_dir.clone()) {
+    let mut cfg = match Config::load_with_options(
+        cli.config_dir.clone(),
+        cli.cache_dir.clone(),
+        cli.allow_loopback,
+    ) {
         Ok(c) => c,
         Err(e) => {
-            return Ok(emit_error(
+            return Ok(meta_cmds::emit_error(
                 &cli,
                 &e,
                 Locale::En,
                 stdout,
                 stderr,
                 stdout_is_terminal,
+                wire,
+                0,
             ));
         }
     };
     if let Err(e) = apply_cli_overrides(&cli, &mut cfg) {
-        return Ok(emit_error(
+        return Ok(meta_cmds::emit_error(
             &cli,
             &e,
             Locale::En,
             stdout,
             stderr,
             stdout_is_terminal,
+            wire,
+            0,
         ));
     }
 
-    // Fail-closed on explicit/config/env lang before any network work.
+    // Fail-closed on explicit/config lang before any network work (no product env).
     let locale = match Locale::resolve(cli.lang.as_deref().or(cfg.lang.as_deref())) {
         Ok(l) => l,
         Err(e) => {
-            return Ok(emit_error(
+            return Ok(meta_cmds::emit_error(
                 &cli,
                 &e,
                 Locale::En,
                 stdout,
                 stderr,
                 stdout_is_terminal,
+                wire,
+                0,
             ));
         }
     };
@@ -291,14 +344,16 @@ async fn run_cli<Out: Write, ErrW: Write>(
 
     match result {
         Ok(code) => Ok(code),
-        Err(e) if e.kind() == ErrorKind::BrokenPipe => Ok(ExitCode::from(141)),
-        Err(e) => Ok(emit_error(
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => Ok(ExitCode::from(EXIT_BROKEN_PIPE)),
+        Err(e) => Ok(meta_cmds::emit_error(
             &cli,
             &e,
             locale,
             stdout,
             stderr,
             stdout_is_terminal,
+            wire,
+            duration_ms(start),
         )),
     }
 }
@@ -323,12 +378,32 @@ fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
         cfg.connect_timeout_secs = t;
     }
     if let Some(ref ua) = cli.user_agent {
+        validate_user_agent(ua)?;
         cfg.user_agent.clone_from(ua);
     }
     if let Some(b) = cli.max_body_bytes {
+        // Fail-closed: never silently clamp explicit CLI budgets (GAP-X-005).
+        if b > crate::config::HARD_MAX_BODY_BYTES {
+            return Err(AppError::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "max_body_bytes exceeds hard maximum ({})",
+                    crate::config::HARD_MAX_BODY_BYTES
+                ),
+            ));
+        }
         cfg.max_body_bytes = b;
     }
     if let Some(b) = cli.max_output_bytes {
+        if b > crate::config::HARD_MAX_OUTPUT_BYTES {
+            return Err(AppError::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "max_output_bytes exceeds hard maximum ({})",
+                    crate::config::HARD_MAX_OUTPUT_BYTES
+                ),
+            ));
+        }
         cfg.max_output_bytes = b;
     }
     if let Some(d) = cli.rate_limit_delay_ms {
@@ -346,6 +421,9 @@ fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
     if let Some(ms) = cli.retry_max_delay_ms {
         cfg.retry_max_delay_ms = ms;
     }
+    if let Some(ms) = cli.retry_max_elapsed_ms {
+        cfg.retry_max_elapsed_ms = ms;
+    }
     if cli.disable_retry {
         cfg.disable_retry = true;
     }
@@ -357,6 +435,9 @@ fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
     }
     if cli.no_cache {
         cfg.no_cache = true;
+    }
+    if cli.allow_loopback {
+        cfg.allow_loopback = true;
     }
     if let Some(ttl) = cli.cache_ttl_secs {
         cfg.cache_ttl_secs = ttl;
@@ -372,77 +453,6 @@ fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
     Ok(())
 }
 
-/// Rank nearby symbols for `--suggest` (exact → prefix → substring → edit distance).
-///
-/// Single in-memory pass over an all.html catalog (one prior HTTP fetch).
-fn rank_suggestions(leaf: &str, hits: &[docs_rs::SearchInCrateHit], limit: usize) -> Vec<String> {
-    use crate::domain::MatchMode;
-    let needle = leaf.trim();
-    if needle.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    let mut scored: Vec<(u8, &docs_rs::SearchInCrateHit)> = Vec::new();
-    for h in hits {
-        if let Some(s) = MatchMode::Exact.score(&h.name, needle) {
-            scored.push((s, h));
-            continue;
-        }
-        if let Some(s) = MatchMode::Prefix.score(&h.name, needle) {
-            scored.push((s.saturating_add(10), h));
-            continue;
-        }
-        if let Some(s) = MatchMode::Substring.score(&h.name, needle) {
-            scored.push((s.saturating_add(20), h));
-            continue;
-        }
-        let leaf_hit = h.name.rsplit("::").next().unwrap_or(h.name.as_str());
-        if let Some(d) = edit_distance_u8(needle, leaf_hit, 2) {
-            scored.push((30 + d, h));
-        }
-    }
-    scored.sort_by_key(|(s, h)| (*s, h.name.clone()));
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (_, h) in scored {
-        let label = format!("{} ({})", h.name, h.kind);
-        if seen.insert(h.name.clone()) {
-            out.push(label);
-            if out.len() >= limit {
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// Bounded Levenshtein distance; returns `None` when distance would exceed `max`.
-fn edit_distance_u8(a: &str, b: &str, max: u8) -> Option<u8> {
-    let a = a.to_ascii_lowercase();
-    let b = b.to_ascii_lowercase();
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let (n, m) = (a.len(), b.len());
-    if n.abs_diff(m) > max as usize {
-        return None;
-    }
-    let max_u = max as usize;
-    let mut prev: Vec<usize> = (0..=m).collect();
-    let mut cur = vec![0usize; m + 1];
-    for i in 1..=n {
-        cur[0] = i;
-        let mut row_min = cur[0];
-        for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-            row_min = row_min.min(cur[j]);
-        }
-        if row_min > max_u {
-            return None;
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    let d = prev[m];
-    if d <= max_u { Some(d as u8) } else { None }
-}
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch<Out: Write, ErrW: Write>(
@@ -459,33 +469,33 @@ async fn dispatch<Out: Write, ErrW: Write>(
     match &cli.command {
         Commands::Version => {
             if wants_json {
-                let data = VersionData {
+                let data = meta_cmds::VersionData {
                     name: APP_NAME,
                     version: APP_VERSION,
                     msrv: MSRV,
                     os: std::env::consts::OS,
                     arch: std::env::consts::ARCH,
                 };
-                write_json(
+                output::write_json(
                     stdout,
                     &success_envelope("version", &data, duration_ms(start), None),
                 )?;
             } else {
-                writeln!(stdout, "{APP_NAME} {APP_VERSION}").map_err(map_stdout_err)?;
+                writeln!(stdout, "{APP_NAME} {APP_VERSION}").map_err(output::map_stdout_err)?;
             }
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Doctor { online } => doctor(cfg, *online, wants_json, start, locale, stdout),
-        Commands::Commands => commands_cmd(wants_json, start, stdout),
-        Commands::Schema { cmd } => schema_cmd(cmd, wants_json, cli.format, start, stdout),
+        Commands::Doctor { online } => doctor::doctor(cfg, *online, wants_json, start, locale, stdout),
+        Commands::Commands => meta_cmds::commands_cmd(wants_json, start, stdout),
+        Commands::Schema { cmd } => meta_cmds::schema_cmd(cmd, wants_json, cli.format, start, stdout),
         Commands::Completions { shell } => {
             // Completions emit shell script by default (even on non-TTY). JSON only if --json/--format json.
             let explicit_json =
                 cli.json || matches!(cli.format, Some(crate::cli::OutputFormat::Json));
-            completions_cmd(*shell, explicit_json, start, stdout)
+            meta_cmds::completions_cmd(*shell, explicit_json, start, stdout)
         }
-        Commands::Cache { action } => cache_cmd(cfg, action, wants_json, start, stdout),
-        Commands::Config { action } => config_cmd(cli, cfg, action, wants_json, start, stdout),
+        Commands::Cache { action } => meta_cmds::cache_cmd(cfg, action, wants_json, start, stdout),
+        Commands::Config { action } => meta_cmds::config_cmd(cli, cfg, action, wants_json, start, stdout),
         Commands::SearchCrates {
             query,
             per_page,
@@ -493,130 +503,31 @@ async fn dispatch<Out: Write, ErrW: Write>(
             page,
             page_token,
         } => {
-            // Full `meta.next_page` tokens already embed `q=…`; allow empty positional query then.
-            let token_carries_query = page_token.as_deref().is_some_and(|t| {
-                let qs = t.trim().trim_start_matches('?');
-                qs.contains('=')
-            });
-            let query = SearchQuery::parse(query, token_carries_query)?;
-            let sort_s = sort.as_api_str();
-            let (per_page, page) = crates_io::clamp_search_pagination(*per_page, *page);
-            let url = if let Some(token) = page_token.as_deref() {
-                crates_io::planned_url_with_page_token(
-                    &cfg.crates_io_origin,
-                    query.as_str(),
-                    per_page,
-                    sort_s,
-                    token,
-                )?
-            } else {
-                crates_io::planned_url_on_host(
-                    &cfg.crates_io_origin,
-                    query.as_str(),
-                    per_page,
-                    sort_s,
-                    page,
-                )?
+            let ctx = ops::OpCtx {
+                cli,
+                cfg,
+                locale,
+                dry_run,
+                wants_json,
+                start,
+                cancel,
             };
-            // Single source of truth: echo params from the effective URL (GAP-001).
-            let fallback = crates_io::SearchEcho::from_cli(query.as_str(), page, per_page, sort_s);
-            let echo = crates_io::echo_params_from_url(&url, &fallback);
-            if dry_run {
-                return emit_dry_run(
-                    "search-crates",
-                    url.as_str(),
-                    SearchCratesDryParams {
-                        q: &echo.query,
-                        per_page: echo.per_page,
-                        sort: &echo.sort,
-                        page: echo.page,
-                        page_token: page_token.as_deref(),
-                    },
-                    wants_json,
-                    start,
-                    stdout,
-                );
-            }
-            let progress = ProgressGuard::start(
-                cli.quiet,
-                Duration::from_secs(2),
-                locale.progress_fetching("crates.io"),
-            );
-            let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data = crates_io::search_crates_at(
-                &http,
-                &url,
-                &echo.query,
-                echo.per_page,
-                &echo.sort,
-                echo.page,
-            )
-            .await;
-            progress.finish();
-            let data = data?;
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope(
-                        "search-crates",
-                        &data,
-                        duration_ms(start),
-                        Some(url.as_str()),
-                    ),
-                )?;
-            } else {
-                let md = render_search_markdown(&data);
-                let (out, _) = render::truncate_output(&md, cfg.max_output_bytes);
-                write!(stdout, "{out}").map_err(map_stdout_err)?;
-            }
-            Ok(ExitCode::SUCCESS)
+            ops::search_crates(&ctx, stdout, query, *per_page, *sort, *page, page_token).await
         }
         Commands::Readme {
             crate_name,
             crate_version,
         } => {
-            let crate_name = CrateName::parse(crate_name)?;
-            let version = VersionArg::parse_opt(crate_version.as_deref())?;
-            let origin = docs_origin_for_crate(cfg, crate_name.as_str());
-            let url =
-                docs_rs::readme_url_on_origin(&origin, crate_name.as_str(), version.as_str())?;
-            if dry_run {
-                return emit_dry_run(
-                    "readme",
-                    url.as_str(),
-                    ReadmeDryParams {
-                        crate_name: crate_name.as_str(),
-                        version: version.as_str(),
-                    },
-                    wants_json,
-                    start,
-                    stdout,
-                );
-            }
-            let progress = ProgressGuard::start(
-                cli.quiet,
-                Duration::from_secs(2),
-                locale.progress_fetching(crate_name.as_str()),
-            );
-            let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data = docs_rs::fetch_readme_on_origin(
-                &http,
-                &origin,
-                crate_name.as_str(),
-                version.as_str(),
-            )
-            .await;
-            progress.finish();
-            let data = apply_truncation_to_readme(data?, cfg);
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("readme", &data, duration_ms(start), Some(&data.source_url)),
-                )?;
-            } else {
-                write!(stdout, "{}", render_readme_markdown(&data)).map_err(map_stdout_err)?;
-            }
-            Ok(ExitCode::SUCCESS)
+            let ctx = ops::OpCtx {
+                cli,
+                cfg,
+                locale,
+                dry_run,
+                wants_json,
+                start,
+                cancel,
+            };
+            ops::readme(&ctx, stdout, crate_name, crate_version).await
         }
         Commands::GetItem {
             crate_name,
@@ -625,120 +536,25 @@ async fn dispatch<Out: Write, ErrW: Write>(
             crate_version,
             suggest,
         } => {
-            let crate_name = CrateName::parse(crate_name)?;
-            let kind = ItemKind::parse(item_type)?;
-            let item_path = ItemPath::parse(item_path)?;
-            let segs = item_path.segments();
-            if let Some(first) = segs.first() {
-                let rustc = item_kind::rustc_crate_name(crate_name.as_str());
-                if first.as_str() != crate_name.as_str()
-                    && first.as_str() != rustc.as_str()
-                    && (first.contains('-') || first.contains('_'))
-                {
-                    tracing::warn!(
-                        path_crate = %first,
-                        expected = %crate_name,
-                        "item_path crate prefix differs from crate_name"
-                    );
-                }
-            }
-            let version = VersionArg::parse_opt(crate_version.as_deref())?;
-            let origin = docs_origin_for_crate(cfg, crate_name.as_str());
-            let url = docs_rs::get_item_url_on_origin(
-                &origin,
-                crate_name.as_str(),
-                version.as_str(),
-                kind,
-                segs,
-            )?;
-            if dry_run {
-                return emit_dry_run(
-                    "get-item",
-                    url.as_str(),
-                    GetItemDryParams {
-                        crate_name: crate_name.as_str(),
-                        item_type: kind.as_str(),
-                        item_path: item_path.as_str(),
-                        version: version.as_str(),
-                    },
-                    wants_json,
-                    start,
-                    stdout,
-                );
-            }
-            let progress = ProgressGuard::start(
-                cli.quiet,
-                Duration::from_secs(2),
-                locale.progress_fetching(item_path.as_str()),
-            );
-            let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data = docs_rs::fetch_item_on_origin(
-                &http,
-                &origin,
-                crate_name.as_str(),
-                version.as_str(),
-                kind,
-                segs,
-            )
-            .await;
-            progress.finish();
-            let data = match data {
-                Ok(d) => apply_truncation_to_item(d, cfg),
-                Err(e) if *suggest && e.kind() == ErrorKind::NotFound => {
-                    // Opt-in recovery: one all.html fetch, then cascade rank (GAP-005).
-                    let all_url = docs_rs::all_html_url_on_origin(
-                        &origin,
-                        crate_name.as_str(),
-                        version.as_str(),
-                    )?;
-                    let leaf = segs
-                        .last()
-                        .map(|s| s.as_str())
-                        .unwrap_or(item_path.as_str());
-                    if let Ok(catalog) = docs_rs::search_in_crate_at(
-                        &http,
-                        crate_name.as_str(),
-                        version.as_str(),
-                        "",
-                        None,
-                        1000,
-                        crate::domain::MatchMode::Prefix,
-                        &all_url,
-                    )
-                    .await
-                    {
-                        let names = rank_suggestions(leaf, &catalog.hits, 5);
-                        return Err(AppError::new(
-                            ErrorKind::NotFound,
-                            format!(
-                                "{}; suggestions: {}",
-                                e.message(),
-                                if names.is_empty() {
-                                    "(none)".into()
-                                } else {
-                                    names.join(", ")
-                                }
-                            ),
-                        ));
-                    }
-                    return Err(e);
-                }
-                Err(e) => return Err(e),
+            let ctx = ops::OpCtx {
+                cli,
+                cfg,
+                locale,
+                dry_run,
+                wants_json,
+                start,
+                cancel,
             };
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope(
-                        "get-item",
-                        &data,
-                        duration_ms(start),
-                        Some(&data.source_url),
-                    ),
-                )?;
-            } else {
-                write!(stdout, "{}", render_item_markdown(&data)).map_err(map_stdout_err)?;
-            }
-            Ok(ExitCode::SUCCESS)
+            ops::get_item(
+                &ctx,
+                stdout,
+                crate_name,
+                item_type,
+                item_path,
+                crate_version,
+                *suggest,
+            )
+            .await
         }
         Commands::SearchInCrate {
             crate_name,
@@ -748,958 +564,27 @@ async fn dispatch<Out: Write, ErrW: Write>(
             limit,
             r#match,
         } => {
-            let crate_name = CrateName::parse(crate_name)?;
-            let query = SearchQuery::parse(query, true)?;
-            let kind_filter = match item_type {
-                Some(t) if !t.is_empty() => Some(ItemKind::parse(t)?),
-                _ => None,
+            let ctx = ops::OpCtx {
+                cli,
+                cfg,
+                locale,
+                dry_run,
+                wants_json,
+                start,
+                cancel,
             };
-            let match_mode = crate::domain::MatchMode::parse(r#match)?;
-            let version = VersionArg::parse_opt(crate_version.as_deref())?;
-            let origin = docs_origin_for_crate(cfg, crate_name.as_str());
-            let url =
-                docs_rs::all_html_url_on_origin(&origin, crate_name.as_str(), version.as_str())?;
-            let limit = (*limit).min(crate::config::MAX_SEARCH_IN_CRATE_LIMIT);
-            if dry_run {
-                return emit_dry_run(
-                    "search-in-crate",
-                    url.as_str(),
-                    SearchInCrateDryParams {
-                        crate_name: crate_name.as_str(),
-                        query: query.as_str(),
-                        version: version.as_str(),
-                        item_type: kind_filter.map(|k| k.as_str()),
-                        match_mode: Some(match_mode.as_str()),
-                        limit,
-                    },
-                    wants_json,
-                    start,
-                    stdout,
-                );
-            }
-            let progress = ProgressGuard::start(
-                cli.quiet,
-                Duration::from_secs(2),
-                locale.progress_fetching(&format!("{} all.html", crate_name.as_str())),
-            );
-            let http = HttpClient::new(cfg.clone(), cancel)?;
-            let data = docs_rs::search_in_crate_on_origin(
-                &http,
-                &origin,
-                crate_name.as_str(),
-                version.as_str(),
-                query.as_str(),
-                kind_filter,
-                limit,
-                match_mode,
-            )
-            .await;
-            progress.finish();
-            let data = data?;
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope(
-                        "search-in-crate",
-                        &data,
-                        duration_ms(start),
-                        Some(&data.source_url),
-                    ),
-                )?;
-            } else {
-                let md = render_search_in_crate_markdown(&data);
-                let (out, _) = render::truncate_output(&md, cfg.max_output_bytes);
-                write!(stdout, "{out}").map_err(map_stdout_err)?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-    }
-}
-
-fn doctor<Out: Write>(
-    cfg: &Config,
-    online: bool,
-    wants_json: bool,
-    start: Instant,
-    locale: Locale,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    let mut checks = Vec::new();
-
-    checks.push(DoctorCheck {
-        name: "platform",
-        ok: true,
-        detail: crate::platform::platform_detail(),
-    });
-    checks.push(DoctorCheck {
-        name: "rustls_client",
-        ok: true,
-        detail: "reqwest built with rustls-tls".into(),
-    });
-    checks.push(DoctorCheck {
-        name: "user_agent",
-        ok: !cfg.user_agent.is_empty() && cfg.user_agent.contains(APP_NAME),
-        detail: cfg.user_agent.clone(),
-    });
-
-    let (config_ok, config_detail) = match &cfg.config_dir {
-        Some(p) => dir_ready_check(p),
-        None => (false, "default-not-resolved".into()),
-    };
-    checks.push(DoctorCheck {
-        name: "config_dir",
-        ok: config_ok,
-        detail: config_detail,
-    });
-
-    // XDG storage layer diagnostics (no .env runtime; no secret layers).
-    checks.push(DoctorCheck {
-        name: "config_source",
-        ok: cfg.config_path_source != crate::config::PathSource::Unresolved,
-        detail: cfg.config_path_source.as_str().into(),
-    });
-    let (cfg_file_ok, cfg_file_detail) = match cfg.config_file_path() {
-        Some(p) => {
-            if p.is_file() {
-                (
-                    true,
-                    format!(
-                        "present loaded={} path={}",
-                        cfg.config_toml_loaded,
-                        p.display()
-                    ),
-                )
-            } else {
-                (
-                    true,
-                    format!("absent (optional; run config init) path={}", p.display()),
-                )
-            }
-        }
-        None => (false, "config file path unresolved".into()),
-    };
-    checks.push(DoctorCheck {
-        name: "config_file",
-        ok: cfg_file_ok,
-        detail: cfg_file_detail,
-    });
-    checks.push(DoctorCheck {
-        name: "cache_source",
-        ok: cfg.no_cache || cfg.cache_path_source != crate::config::PathSource::Unresolved,
-        detail: if cfg.no_cache {
-            "n/a (--no-cache)".into()
-        } else {
-            cfg.cache_path_source.as_str().into()
-        },
-    });
-    checks.push(DoctorCheck {
-        name: "dotenv_runtime",
-        ok: true,
-        detail: "disabled (XDG + env allowlist only; no .env required after install)".into(),
-    });
-    checks.push(DoctorCheck {
-        name: "secrets_layers",
-        ok: true,
-        detail: "none (public HTTP only; keyring/cloud secret managers out of scope)".into(),
-    });
-
-    // Runtime clamps both to min 1s (`Config::timeout` / `connect_timeout`); report effective values.
-    let eff_timeout = cfg.timeout_secs.max(1);
-    let eff_connect = cfg.connect_timeout_secs.max(1);
-    checks.push(DoctorCheck {
-        name: "timeouts",
-        ok: true,
-        detail: format!("timeout={eff_timeout}s connect={eff_connect}s"),
-    });
-
-    let resolved_conc = crate::concurrency::resolve_max_concurrency(cfg.max_concurrency);
-    let workers = crate::concurrency::runtime_worker_threads();
-    checks.push(DoctorCheck {
-        name: "concurrency",
-        ok: true,
-        detail: format!(
-            "max_concurrency={} (configured={}; 0=auto) runtime_workers≈{} formula=min(cpus,free_ram/2/{}MiB) cap={}",
-            resolved_conc,
-            cfg.max_concurrency,
-            workers,
-            crate::concurrency::RAM_PER_TASK_MIB,
-            crate::concurrency::MAX_AUTO_CONCURRENCY
-        ),
-    });
-
-    let retry = crate::retry::RetryConfig::from_config(cfg);
-    checks.push(DoctorCheck {
-        name: "retry_policy",
-        ok: true,
-        detail: format!(
-            "enabled={} max_retries={} base_ms={} max_delay_ms={} max_attempts={} formula=full_jitter(min(base*2^n,max_delay)) kill_switch=--disable-retry",
-            retry.enabled,
-            retry.max_retries,
-            retry.base_ms,
-            retry.max_delay_ms,
-            retry.max_attempts()
-        ),
-    });
-
-    let (cache_ok, cache_detail) = if cfg.no_cache {
-        (true, "disabled (--no-cache)".to_string())
-    } else {
-        match &cfg.cache_dir {
-            Some(p) => {
-                let (ready, ready_detail) = dir_ready_check(p);
-                if !ready {
-                    (false, ready_detail)
-                } else {
-                    let stats =
-                        DiskCache::new(p.clone(), cfg.cache_ttl(), cfg.max_cache_bytes).stats();
-                    let budget = if cfg.max_cache_bytes == 0 {
-                        "unlimited".to_string()
-                    } else {
-                        format!("{}B", cfg.max_cache_bytes)
-                    };
-                    (
-                        true,
-                        format!(
-                            "enabled dir={} ttl={}s max={} entries={} used={}B parser={}",
-                            p.display(),
-                            cfg.cache_ttl_secs,
-                            budget,
-                            stats.entries,
-                            stats.total_bytes,
-                            crate::cache::CACHE_PARSER_VERSION
-                        ),
-                    )
-                }
-            }
-            None => (false, "no cache dir resolved".to_string()),
-        }
-    };
-    checks.push(DoctorCheck {
-        name: "disk_cache",
-        ok: cache_ok,
-        detail: cache_detail,
-    });
-
-    // Cross-process rate-limit lock+stamp directory (same root as disk cache).
-    let (rl_ok, rl_detail) = if cfg.no_cache {
-        (
-            true,
-            "n/a (--no-cache; in-process rate limit only)".to_string(),
-        )
-    } else {
-        match &cfg.cache_dir {
-            Some(p) => {
-                let rl = p.join("rate-limit");
-                dir_ready_check(&rl)
-            }
-            None => (
-                false,
-                "no cache dir resolved (cross-process rate limit unavailable)".to_string(),
-            ),
-        }
-    };
-    checks.push(DoctorCheck {
-        name: "rate_limit_dir",
-        ok: rl_ok,
-        detail: rl_detail,
-    });
-
-    // Resolved human locale for stderr prose (JSON messages stay English).
-    checks.push(DoctorCheck {
-        name: "lang",
-        ok: true,
-        detail: locale.as_bcp47().into(),
-    });
-
-    // Contact URL should not be the historical placeholder host.
-    let ua_contact_ok = !cfg.user_agent.contains("github.com/docsrs-cli/docsrs-cli");
-    checks.push(DoctorCheck {
-        name: "user_agent_contact",
-        ok: ua_contact_ok,
-        detail: if ua_contact_ok {
-            "contact is not the placeholder docsrs-cli org".into()
-        } else {
-            "placeholder contact host github.com/docsrs-cli/docsrs-cli is invalid".into()
-        },
-    });
-
-    if online {
-        // Sync DNS/TCP probe (no async runtime needed inside doctor).
-        for (name, host) in [
-            ("online_crates_io", "crates.io"),
-            ("online_docs_rs", "docs.rs"),
-        ] {
-            let ok_probe = std::net::ToSocketAddrs::to_socket_addrs(&format!("{host}:443"))
-                .map(|mut it| it.next().is_some())
-                .unwrap_or(false);
-            checks.push(DoctorCheck {
-                name,
-                ok: ok_probe,
-                detail: if ok_probe {
-                    format!("{host}:443 resolves")
-                } else {
-                    format!("{host}:443 DNS/resolve failed")
-                },
-            });
-        }
-    }
-
-    let ok = checks.iter().all(|c| c.ok);
-    let data = DoctorData { ok, checks };
-    if wants_json {
-        // Agent-first: top-level `ok` mirrors `data.ok` (GAP-004). Exit 78 when unhealthy.
-        write_json(
-            stdout,
-            &render::success_envelope_with_ok("doctor", &data, duration_ms(start), None, data.ok),
-        )?;
-    } else {
-        writeln!(stdout, "{}", locale.doctor_ok(ok)).map_err(map_stdout_err)?;
-        for c in &data.checks {
-            writeln!(
+            ops::search_in_crate(
+                &ctx,
                 stdout,
-                "- {} [{}] {}",
-                c.name,
-                if c.ok { "ok" } else { "fail" },
-                c.detail
+                crate_name,
+                query,
+                crate_version,
+                item_type,
+                *limit,
+                r#match,
             )
-            .map_err(map_stdout_err)?;
+            .await
         }
     }
-    Ok(if ok {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(78)
-    })
 }
 
-/// Check that `path` is an existing writable directory, or can be created under a
-/// writable ancestor. Does not leave directories behind when only probing parents.
-fn dir_ready_check(path: &Path) -> (bool, String) {
-    if path.is_dir() {
-        let probe = path.join(".docsrs-cli-doctor-write-probe");
-        return match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&probe)
-        {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&probe);
-                (true, path.display().to_string())
-            }
-            Err(e) => (false, format!("{} (not writable: {e})", path.display())),
-        };
-    }
-    if path.exists() {
-        return (
-            false,
-            format!("{} (exists but is not a directory)", path.display()),
-        );
-    }
-    let mut ancestor = path.parent();
-    while let Some(a) = ancestor {
-        if a.as_os_str().is_empty() {
-            break;
-        }
-        if a.is_dir() {
-            let probe = a.join(".docsrs-cli-doctor-write-probe");
-            return match std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&probe)
-            {
-                Ok(_) => {
-                    let _ = std::fs::remove_file(&probe);
-                    (
-                        true,
-                        format!("{} (creatable under {})", path.display(), a.display()),
-                    )
-                }
-                Err(e) => (
-                    false,
-                    format!("{} (ancestor not writable: {e})", path.display()),
-                ),
-            };
-        }
-        if a.exists() {
-            return (
-                false,
-                format!("{} (ancestor is not a directory)", path.display()),
-            );
-        }
-        ancestor = a.parent();
-    }
-    (
-        false,
-        format!("{} (missing; no writable ancestor)", path.display()),
-    )
-}
-
-fn cache_cmd<Out: Write>(
-    cfg: &Config,
-    action: &CacheAction,
-    wants_json: bool,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    let root = cfg.cache_dir.clone().ok_or_else(|| {
-        AppError::new(
-            ErrorKind::Config,
-            "cache directory could not be resolved (set --cache-dir or DOCSRS_CLI_CACHE_DIR)",
-        )
-    })?;
-    let cache = DiskCache::new(root, cfg.cache_ttl(), cfg.max_cache_bytes);
-    match action {
-        CacheAction::Clear => {
-            let result = cache.clear()?;
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("cache-clear", &result, duration_ms(start), None),
-                )?;
-            } else {
-                writeln!(
-                    stdout,
-                    "cache cleared: {} entries, {} bytes freed ({})",
-                    result.removed_entries, result.freed_bytes, result.root
-                )
-                .map_err(map_stdout_err)?;
-            }
-        }
-        CacheAction::Stats => {
-            let stats = cache.stats();
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("cache-stats", &stats, duration_ms(start), None),
-                )?;
-            } else {
-                let budget = if stats.max_bytes == 0 {
-                    "unlimited".to_string()
-                } else {
-                    format!("{}B", stats.max_bytes)
-                };
-                writeln!(
-                    stdout,
-                    "cache root={} layout={} entries={} used={}B max={} ttl={}s parser={}",
-                    stats.root,
-                    stats.layout,
-                    stats.entries,
-                    stats.total_bytes,
-                    budget,
-                    stats.ttl_secs,
-                    stats.parser_version
-                )
-                .map_err(map_stdout_err)?;
-            }
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// XDG config lifecycle: path inventory, effective show, init template.
-fn config_cmd<Out: Write>(
-    cli: &Cli,
-    cfg: &Config,
-    action: &ConfigAction,
-    wants_json: bool,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    match action {
-        ConfigAction::Path => {
-            let data = config_path_data(cfg);
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("config-path", &data, duration_ms(start), None),
-                )?;
-            } else {
-                writeln!(
-                    stdout,
-                    "config_dir={} source={}",
-                    data.config_dir.as_deref().unwrap_or("<unresolved>"),
-                    data.config_source.as_str()
-                )
-                .map_err(map_stdout_err)?;
-                writeln!(
-                    stdout,
-                    "config_file={} exists={} loaded={}",
-                    data.config_file.as_deref().unwrap_or("<unresolved>"),
-                    data.config_file_exists,
-                    data.config_toml_loaded
-                )
-                .map_err(map_stdout_err)?;
-                writeln!(
-                    stdout,
-                    "cache_dir={} source={}",
-                    data.cache_dir.as_deref().unwrap_or("<unresolved>"),
-                    data.cache_source.as_str()
-                )
-                .map_err(map_stdout_err)?;
-                writeln!(
-                    stdout,
-                    "dotenv_runtime={} secrets={}",
-                    data.dotenv_runtime, data.secrets_layers
-                )
-                .map_err(map_stdout_err)?;
-            }
-        }
-        ConfigAction::Show => {
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("config-show", cfg, duration_ms(start), None),
-                )?;
-            } else {
-                let pretty = serde_json::to_string_pretty(cfg).map_err(|e| {
-                    AppError::with_source(ErrorKind::Internal, "failed to serialize config", e)
-                })?;
-                writeln!(stdout, "{pretty}").map_err(map_stdout_err)?;
-            }
-        }
-        ConfigAction::Init { force } => {
-            let result = init_config_toml(cli.config_dir.clone(), *force)?;
-            if wants_json {
-                write_json(
-                    stdout,
-                    &success_envelope("config-init", &result, duration_ms(start), None),
-                )?;
-            } else {
-                let verb = if result.overwritten {
-                    "overwrote"
-                } else {
-                    "created"
-                };
-                writeln!(
-                    stdout,
-                    "config init: {verb} {} (source={})",
-                    result.path,
-                    result.source.as_str()
-                )
-                .map_err(map_stdout_err)?;
-            }
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Emit the full command tree for agent discovery (`commands` subcommand).
-fn commands_cmd<Out: Write>(
-    wants_json: bool,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    let data = command_tree_data();
-    if wants_json {
-        write_json(
-            stdout,
-            &success_envelope("commands", &data, duration_ms(start), None),
-        )?;
-    } else {
-        writeln!(stdout, "{} {} — command tree", data.name, data.version)
-            .map_err(map_stdout_err)?;
-        for c in data.commands {
-            writeln!(stdout, "- {}: {}", c.name, c.about).map_err(map_stdout_err)?;
-            for s in c.subcommands {
-                writeln!(stdout, "  - {} {}: {}", c.name, s.name, s.about)
-                    .map_err(map_stdout_err)?;
-            }
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Typed `version` success data (matches `docs/schemas/version.schema.json`).
-#[derive(Debug, Serialize)]
-struct VersionData {
-    name: &'static str,
-    version: &'static str,
-    msrv: &'static str,
-    os: &'static str,
-    arch: &'static str,
-}
-
-/// One doctor health check row.
-#[derive(Debug, Serialize)]
-struct DoctorCheck {
-    name: &'static str,
-    ok: bool,
-    detail: String,
-}
-
-/// Typed `doctor` success data (matches `docs/schemas/doctor.schema.json`).
-#[derive(Debug, Serialize)]
-struct DoctorData {
-    ok: bool,
-    checks: Vec<DoctorCheck>,
-}
-
-/// Agent notes embedded in the `commands` tree.
-#[derive(Debug, Serialize)]
-struct AgentNotes {
-    stdout: &'static str,
-    stderr: &'static str,
-    json_auto: &'static str,
-    lifecycle: &'static str,
-}
-
-/// One nested subcommand entry under `cache`.
-#[derive(Debug, Serialize)]
-struct SubCommandNode {
-    name: &'static str,
-    about: &'static str,
-}
-
-/// One top-level command entry in the discovery tree.
-#[derive(Debug, Serialize)]
-struct CommandNode {
-    name: &'static str,
-    about: &'static str,
-    args: &'static [&'static str],
-    subcommands: &'static [SubCommandNode],
-}
-
-/// Stable, ordered command tree for agents (no HashMap iteration).
-#[derive(Debug, Serialize)]
-struct CommandTree {
-    name: &'static str,
-    version: &'static str,
-    msrv: &'static str,
-    schema_version: u32,
-    agent_notes: AgentNotes,
-    commands: &'static [CommandNode],
-}
-
-/// Schema command payload (`schema` stays `Value` — embedded JSON Schema document).
-#[derive(Debug, Serialize)]
-struct SchemaData<'a> {
-    command: &'a str,
-    schema: serde_json::Value,
-    schema_version: u32,
-}
-
-/// Completions command payload.
-#[derive(Debug, Serialize)]
-struct CompletionsData {
-    shell: &'static str,
-    script: String,
-}
-
-/// Stable, ordered command tree for agents (no HashMap iteration).
-fn command_tree_data() -> CommandTree {
-    CommandTree {
-        name: APP_NAME,
-        version: APP_VERSION,
-        msrv: MSRV,
-        schema_version: SCHEMA_VERSION,
-        agent_notes: AgentNotes {
-            stdout: "data only (JSON envelope or markdown)",
-            stderr: "diagnostics only",
-            json_auto: "JSON is selected automatically when stdout is not a TTY unless --format markdown|text",
-            lifecycle: "BORN → EXECUTE → FINALIZE → DIE (one-shot, no daemon)",
-        },
-        commands: &[
-            CommandNode {
-                name: "search-crates",
-                about: "Search crates on crates.io",
-                args: &["query", "--per-page", "--sort", "--page", "--page-token"],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "readme",
-                about: "Fetch crate overview docblock from docs.rs (not git README)",
-                args: &["crate_name", "--crate-version"],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "get-item",
-                about: "Fetch documentation for a typed item",
-                args: &[
-                    "crate_name",
-                    "item_type",
-                    "item_path",
-                    "--crate-version",
-                    "--suggest",
-                ],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "search-in-crate",
-                about: "Search symbols in crate all.html index",
-                args: &[
-                    "crate_name",
-                    "query",
-                    "--crate-version",
-                    "--item-type",
-                    "--limit",
-                    "--match",
-                ],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "version",
-                about: "Print binary version",
-                args: &[],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "doctor",
-                about: "Validate local TLS/config readiness",
-                args: &["--online"],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "commands",
-                about: "List the full command tree for agent discovery",
-                args: &[],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "schema",
-                about: "Emit JSON Schema for a command",
-                args: &["--cmd"],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "completions",
-                about: "Generate shell completions",
-                args: &["shell"],
-                subcommands: &[],
-            },
-            CommandNode {
-                name: "cache",
-                about: "Inspect or clear the XDG HTTP disk cache",
-                args: &[],
-                subcommands: &[
-                    SubCommandNode {
-                        name: "clear",
-                        about: "Delete all cached HTTP bodies under the cache dir",
-                    },
-                    SubCommandNode {
-                        name: "stats",
-                        about: "Report entry count, total bytes, and budget",
-                    },
-                ],
-            },
-            CommandNode {
-                name: "config",
-                about: "Manage XDG config paths and optional config.toml (no secrets / no .env)",
-                args: &[],
-                subcommands: &[
-                    SubCommandNode {
-                        name: "path",
-                        about: "Print resolved config/cache directories and which layer won",
-                    },
-                    SubCommandNode {
-                        name: "show",
-                        about: "Print effective runtime configuration",
-                    },
-                    SubCommandNode {
-                        name: "init",
-                        about: "Create default config.toml under the resolved config directory",
-                    },
-                ],
-            },
-        ],
-    }
-}
-
-fn schema_cmd<Out: Write>(
-    cmd: &str,
-    wants_json: bool,
-    format: Option<crate::cli::OutputFormat>,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    let schema = match cmd {
-        "search-crates" => include_str!("../docs/schemas/search-crates.schema.json"),
-        "readme" => include_str!("../docs/schemas/readme.schema.json"),
-        "get-item" => include_str!("../docs/schemas/get-item.schema.json"),
-        "search-in-crate" => include_str!("../docs/schemas/search-in-crate.schema.json"),
-        "version" => include_str!("../docs/schemas/version.schema.json"),
-        "doctor" => include_str!("../docs/schemas/doctor.schema.json"),
-        "commands" => include_str!("../docs/schemas/commands.schema.json"),
-        "schema" => include_str!("../docs/schemas/schema.schema.json"),
-        "completions" => include_str!("../docs/schemas/completions.schema.json"),
-        "error" => include_str!("../docs/schemas/error.schema.json"),
-        "dry-run" => include_str!("../docs/schemas/dry-run.schema.json"),
-        "cache" | "cache-clear" | "cache-stats" => {
-            include_str!("../docs/schemas/cache.schema.json")
-        }
-        "config" | "config-path" | "config-show" | "config-init" => {
-            include_str!("../docs/schemas/config.schema.json")
-        }
-        other => {
-            return Err(AppError::new(
-                ErrorKind::Usage,
-                format!("unknown schema command '{other}'"),
-            ));
-        }
-    };
-    let schema_val: serde_json::Value = serde_json::from_str(schema).map_err(|e| {
-        AppError::with_source(ErrorKind::Internal, "embedded schema is invalid JSON", e)
-    })?;
-    // Branch first so JSON path can move `schema_val` into the envelope (no clone).
-    if wants_json {
-        let data = SchemaData {
-            command: cmd,
-            schema: schema_val,
-            schema_version: SCHEMA_VERSION,
-        };
-        write_json(
-            stdout,
-            &success_envelope("schema", &data, duration_ms(start), None),
-        )?;
-    } else if matches!(format, Some(crate::cli::OutputFormat::Markdown)) {
-        let md = render::render_schema_markdown(cmd, &schema_val);
-        write!(stdout, "{md}").map_err(map_stdout_err)?;
-    } else {
-        writeln!(
-            stdout,
-            "{}",
-            serde_json::to_string_pretty(&schema_val).unwrap_or_default()
-        )
-        .map_err(map_stdout_err)?;
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn completions_cmd<Out: Write>(
-    shell: crate::cli::Shell,
-    wants_json: bool,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    let mut buf = Vec::new();
-    let mut cmd = Cli::command();
-    clap_complete::generate(shell.to_clap_shell(), &mut cmd, APP_NAME, &mut buf);
-    let script = String::from_utf8_lossy(&buf).into_owned();
-    if wants_json {
-        let data = CompletionsData {
-            shell: shell.as_str(),
-            script,
-        };
-        write_json(
-            stdout,
-            &success_envelope("completions", &data, duration_ms(start), None),
-        )?;
-    } else {
-        write!(stdout, "{script}").map_err(map_stdout_err)?;
-        let _ = stdout.flush();
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Typed dry-run params for `search-crates` (keys match crates.io query string).
-#[derive(Debug, Serialize)]
-struct SearchCratesDryParams<'a> {
-    q: &'a str,
-    per_page: u32,
-    sort: &'a str,
-    page: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    page_token: Option<&'a str>,
-}
-
-/// Typed dry-run params for `readme`.
-#[derive(Debug, Serialize)]
-struct ReadmeDryParams<'a> {
-    crate_name: &'a str,
-    version: &'a str,
-}
-
-/// Typed dry-run params for `get-item`.
-#[derive(Debug, Serialize)]
-struct GetItemDryParams<'a> {
-    crate_name: &'a str,
-    item_type: &'a str,
-    item_path: &'a str,
-    version: &'a str,
-}
-
-/// Typed dry-run params for `search-in-crate`.
-#[derive(Debug, Serialize)]
-struct SearchInCrateDryParams<'a> {
-    crate_name: &'a str,
-    query: &'a str,
-    version: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    item_type: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    match_mode: Option<&'a str>,
-    limit: u32,
-}
-
-fn emit_dry_run<Out: Write, P: Serialize>(
-    command: &str,
-    planned_url: &str,
-    planned_params: P,
-    wants_json: bool,
-    start: Instant,
-    stdout: &mut Out,
-) -> AppResult<ExitCode> {
-    if wants_json {
-        write_json(
-            stdout,
-            &dry_run_envelope(command, planned_url, &planned_params, duration_ms(start)),
-        )?;
-    } else {
-        writeln!(stdout, "dry-run {command}").map_err(map_stdout_err)?;
-        writeln!(stdout, "planned_url: {planned_url}").map_err(map_stdout_err)?;
-        writeln!(
-            stdout,
-            "planned_params: {}",
-            serde_json::to_string_pretty(&planned_params).unwrap_or_default()
-        )
-        .map_err(map_stdout_err)?;
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn map_stdout_err(e: io::Error) -> AppError {
-    if e.kind() == io::ErrorKind::BrokenPipe {
-        AppError::broken_pipe()
-    } else {
-        AppError::with_source(ErrorKind::Internal, "stdout write", e)
-    }
-}
-
-/// Serialize one RFC 8259 JSON object (compact, single line) + trailing `\n`.
-///
-/// Product stdout is a single JSON document per invocation (not NDJSON streams).
-/// Optional fields are omitted when `None` (`skip_serializing_if`), never `NaN`/`Infinity`.
-///
-/// Serialize to an intermediate buffer first so broken-pipe on write is mapped to
-/// exit 141 without conflating pure serde failures with I/O.
-fn write_json<Out: Write, T: Serialize>(stdout: &mut Out, v: &T) -> AppResult<()> {
-    let mut buf = Vec::with_capacity(256);
-    serde_json::to_writer(&mut buf, v)
-        .map_err(|e| AppError::with_source(ErrorKind::Internal, "json serialize failed", e))?;
-    buf.push(b'\n');
-    stdout.write_all(&buf).map_err(map_stdout_err)?;
-    let _ = stdout.flush();
-    Ok(())
-}
-
-fn emit_error<Out: Write, ErrW: Write>(
-    cli: &Cli,
-    err: &AppError,
-    locale: Locale,
-    stdout: &mut Out,
-    stderr: &mut ErrW,
-    stdout_is_terminal: bool,
-) -> ExitCode {
-    if cli.wants_json(stdout_is_terminal) {
-        // Best-effort: preserve the original error exit code even if stdout is gone.
-        let _ = write_json(stdout, &error_envelope(err));
-    } else {
-        // Human path: error on stderr; stdout stays empty.
-        // Force with --format text|markdown even when stdout is a pipe.
-        let _ = writeln!(stderr, "{}", locale.format_error(err.message()));
-        let _ = stderr.flush();
-    }
-    flush_stdio();
-    err.exit_code()
-}

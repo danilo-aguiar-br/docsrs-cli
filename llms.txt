@@ -1,7 +1,7 @@
 # docsrs-cli
 > One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
 
-docsrs-cli is a born-execute-finalize-die binary that searches crates, fetches README overviews and typed rustdoc items, and emits stable JSON envelopes on stdout with diagnostics only on stderr. Current release line is 0.1.x with ranked `--match` modes, effective-URL `--page-token` echo, method-scoped `extraction`, non-retryable `kind=budget`, cascade `--suggest`, hyphen path normalize, rustdoc chrome scrub, doctor `ok` parity, timeout-0 fail-closed, and `data.cache_hit`.
+docsrs-cli is a born-execute-finalize-die binary that searches crates, fetches README overviews and typed rustdoc items, and emits stable JSON envelopes on stdout with diagnostics only on stderr. Current release line is 1.2.x (release 1.2.0) with method fail-closed (`#method.X` missing → `not_found` exit 66), error envelopes carrying `command`+`duration_ms`, hard-max budget fail-closed (exit 65), ranked `--match` modes, effective-URL `--page-token` echo, cascade `--suggest` (method leaves from parent page), hyphen path normalize, rustdoc chrome scrub, doctor `ok` parity, timeout-0 fail-closed, `schema --cmd all` (19 wire names), and `data.cache_hit`.
 
 ## Primary Documentation
 - [README](README.md): product landing page, install, commands, env vars
@@ -9,25 +9,25 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates, fetches R
 - [Agents](docs/AGENTS.md): agent integration contract and economy
 - [Cookbook](docs/COOKBOOK.md): executable recipes
 - [Cross platform](docs/CROSS_PLATFORM.md): OS matrix and XDG paths
-- [Migration](docs/MIGRATION.md): 0.1.x / 1.1.x to 0.1.2 migration notes
+- [Migration](docs/MIGRATION.md): upgrade notes through 1.2.0 (Camada Y)
 - [Testing](docs/TESTING.md): how to run categorized tests and smoke-live
-- [JSON schemas](docs/schemas/README.md): machine-readable payload contracts
+- [JSON schemas](docs/schemas/README.md): machine-readable payload contracts (19 offline files)
 - [Integrations](INTEGRATIONS.md): agents, shells, CI surfaces
-- [Changelog](CHANGELOG.md): Keep a Changelog history including 0.1.2
+- [Changelog](CHANGELOG.md): Keep a Changelog history including 1.2.0
 - [Security](SECURITY.md): vulnerability reporting
 - [Contributing](CONTRIBUTING.md): contributor workflow
-- [English skill](skills/docsrs-cli-en/SKILL.md): imperative agent runbook
+- [English skill](skills/docsrs-cli-en/SKILL.md): imperative agent runbook (MUST reject method+item_page)
 - [Portuguese skill](skills/docsrs-cli-pt/SKILL.md): runbook em português
 - [Full index](llms-full.txt): expanded documentation map
 - [Portuguese discovery](llms.pt-BR.txt): mapa em português
-- [gaps.md](gaps.md): closed product gap matrix for 0.1.2
+- [gaps.md](gaps.md): product gap matrix (Camada Y closes W+X; OPEN W+X = 0)
 
 ## Optional
-- [get-item schema](docs/schemas/get-item.schema.json): item_name, resolved_version, extraction, cache_hit
+- [get-item schema](docs/schemas/get-item.schema.json): item_name, resolved_version, extraction=method on success, cache_hit
 - [search-in-crate schema](docs/schemas/search-in-crate.schema.json): match_mode, score, cache_hit
 - [search-crates schema](docs/schemas/search-crates.schema.json): page tokens, effective echo, cache_hit
 - [readme schema](docs/schemas/readme.schema.json): resolved_version and cache_hit
 - [schema meta](docs/schemas/schema.schema.json): embedded schema document payload
 - [completions schema](docs/schemas/completions.schema.json): shell + script JSON mode
-- [error schema](docs/schemas/error.schema.json): budget kind, retryable flag, top-level error envelope
-- [dry-run schema](docs/schemas/dry-run.schema.json): planned_url and planned_params.crate_name
+- [error schema](docs/schemas/error.schema.json): command, duration_ms, budget kind, retryable flag
+- [dry-run schema](docs/schemas/dry-run.schema.json): planned_url, validation, planned_params.crate_name

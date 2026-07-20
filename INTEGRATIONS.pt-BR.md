@@ -12,7 +12,7 @@
 - Probes online do doctor para crates.io e docs.rs quando opt-in
 
 
-## Flags Adicionadas em 1.1.0 (ainda válidas em 0.1.x)
+## Flags Adicionadas em 1.1.x (ainda válidas em 1.2.x)
 - `--match exact|prefix|substring` em `search-in-crate` (padrão `prefix`)
 - `--page-token` em `search-crates` para paginação opaca de `meta.next_page`
 - `--suggest` em `get-item` para listar símbolos próximos após 404
@@ -22,14 +22,24 @@
 - Knobs de produto usam flags CLI e XDG `config.toml` apenas, não env `DOCSRS_CLI_*` de produto
 - `resolved_version` opcional em readme e get-item (canal da stdlib é `stable`)
 
-## Endurecimento de Contrato em 0.1.2
+## Endurecimento de Contrato em 1.2.0 (Camada Y)
+- Method com `#method.X` ausente é `not_found` (exit 66), nunca sucesso falso com página pai
+- Sucesso de method define `data.extraction` apenas como `method`
+- Agentes DEVEM rejeitar sucesso de method se `extraction` estiver ausente ou for o legado `item_page`
+- `--suggest` em 404 de method ranqueia leaves de método na página do tipo pai
+- Envelopes de erro incluem `command` e `duration_ms` no topo (paridade com sucesso)
+- Valores de budget acima do hard max falham fechados com exit 65 (sem clamp silencioso)
+- Corpo acima de `--max-body-bytes` configurado (dentro do hard max) é `error.kind=budget` (exit 74, `retryable=false`)
+- URL 404 de method mantém o primeiro kind de probe (`struct`), não o último
+- Dry-run reporta `validation=url_shape_only` e probes de parent kind para methods
+- `docs/schemas` offline bate com `schema --cmd all` (19 nomes wire incluindo aliases)
+
+## Endurecimento retido de 1.1.x
 - `--page-token` ecoa `query` / `page` / `per_page` / `sort` efetivos da URL planejada
-- `get-item` de método associado isola o markdown do método (`data.extraction` = `method`|`item_page`)
-- Corpo acima de `--max-body-bytes` é `error.kind=budget` (exit 74, `retryable=false`)
 - `doctor` top-level `ok` espelha `data.ok` (exit 78 quando unhealthy)
 - `--suggest` ranqueia exact → prefix → substring → edit-distance
-- `--timeout 0` / `--connect-timeout 0` explícitos falham fechado (exit 65)
-- Script de smoke humano: `scripts/smoke-live.sh`
+- `--timeout 0` / `--connect-timeout 0` explícitos fail-closed (exit 65)
+- Script humano de smoke: `scripts/smoke-live.sh`
 
 
 ## Aliases de Flags
@@ -60,9 +70,9 @@
 - Invoque como subprocesso one-shot por operação
 - Passe `--json` ou confie no auto-JSON non-TTY
 - Parseie `ok`, `command`, `data` e `duration_ms` em sucesso
-- Parseie `ok:false`, `error.kind` e `error.retryable` em falha
-- Nunca retente `kind=budget` (exit 74); aumente `--max-body-bytes`
-- Leia `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode` e `data.extraction` opcional quando presentes
+- Parseie `ok:false`, `command`, `duration_ms`, `error.kind` e `error.retryable` em falha
+- Nunca retente `kind=budget` (exit 74); aumente `--max-body-bytes` só dentro do hard max (acima do hard max é exit 65)
+- Leia `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode`; sucesso de method exige `data.extraction=method`
 - Trate doctor como saudável só quando top-level `ok` e `data.ok` forem ambos true
 - Comece com `commands --json` e `schema --cmd <name> --json`
 - Prefira `--match prefix` ou `exact` para lookup preciso de símbolos
@@ -89,7 +99,7 @@
 ## CI e Scripts
 - Sempre passe `--json` para parse estável
 - Trate exit `0` como sucesso e non-zero como classes de falha
-- Defina `DOCSRS_CLI_HOME` só para config e cache isolados
+- Use `--config-dir` / `--cache-dir` para config e cache isolados
 - Knobs de produto vêm de flags ou XDG `config.toml`, não de env de produto
 - Não habilite testes live de rede a menos que seja intencional
 

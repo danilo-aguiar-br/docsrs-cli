@@ -2,8 +2,8 @@
 
 # Security Policy
 ## Supported Versions
-- `0.1.x` receives security fixes
-- `1.1.x` and `0.1.x` are historical and do not receive new security fixes
+- `1.2.x` (current line) receives security fixes
+- `0.1.x` is historical and does not receive new security fixes
 - Pre-release experiments outside tagged releases are unsupported
 
 
@@ -42,17 +42,23 @@
 
 ## Scope Notes
 - Product HTTP is GET-only against `crates.io`, `docs.rs`, `static.docs.rs`, and `doc.rust-lang.org`
-- TLS uses rustls only
+- Origin overrides, redirects, request gate, and cached `final_url` share one host allowlist (SSRF gate)
+- TLS uses rustls only (min TLS 1.2, crypto provider **ring**, floor rustls ≥ 0.23.18); no `danger_accept_invalid_*`
+- Trust roots: webpki-roots; system `HTTP(S)_PROXY` is operator-trusted when used (target allowlist still applies)
+- Product crate compiles with `#![forbid(unsafe_code)]`
 - No product telemetry
 - No API keys are stored by the product
 - Disk cache holds public HTTP bodies only
 - Unix private modes prefer `0o700` dirs and `0o600` files for CLI writes
 - Product knobs come from CLI flags and XDG `config.toml` only, never from product `DOCSRS_CLI_*` env vars
+- `config.toml` is size-capped and rejects unknown keys; User-Agent must be visible ASCII
+- Threat model (STRIDE, accepted risks): [`docs/decisions/0004-threat-model.md`](docs/decisions/0004-threat-model.md)
+- TLS posture (provider, non-goals): [`docs/decisions/0007-rustls-posture.md`](docs/decisions/0007-rustls-posture.md)
 
 
 ## Hall of Fame
 - Security researchers who report valid issues may be listed here after fixes ship
-- No entries yet for 0.1.2
+- No entries yet for 1.2.x
 
 
 ## Best Practices for Users

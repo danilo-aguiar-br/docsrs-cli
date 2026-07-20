@@ -5,17 +5,26 @@
 # === Raiz — arquivos (somente raiz; docs/AGENTS.md e publico) ===
 /AGENTS.md
 /CLAUDE.md
-.enrich-queue.sqlite
-.enrich-queue.sqlite-shm
-.enrich-queue.sqlite-wal
+# GraphRAG / enrich-queue SQLite — OBRIGATÓRIO em QUALQUER pasta (raiz e subdirs)
+**/graphrag.sqlite
+**/graphrag.sqlite-shm
+**/graphrag.sqlite-wal
+**/.enrich-queue.sqlite
+**/.enrich-queue.sqlite-shm
+**/.enrich-queue.sqlite-wal
+# basename (sem slash) também casa em qualquer diretório no gitignore
 graphrag.sqlite
 graphrag.sqlite-shm
 graphrag.sqlite-wal
+.enrich-queue.sqlite
+.enrich-queue.sqlite-shm
+.enrich-queue.sqlite-wal
 
 # === Raiz — pastas ===
 base_conhecimento_docs-rs-mcp/
 docs_prd/
 docs_rules/
+.setting.cyber/
 
 # === Inventario recursivo — todos os caminhos ===
 base_conhecimento_docs-rs-mcp/
@@ -151,12 +160,20 @@ docs_rules/rules_rust_web_scraping_http_html_json_csv.md
 docs_rules/rules_rust_websockets.md
 docs_rules/rules_rust_workflow_orchestration_dag_pipeline_jobs.md
 docs_rules/rules_rust_zip_rar_7zip_gzip_targz.md
-.enrich-queue.sqlite
-.enrich-queue.sqlite-shm
-.enrich-queue.sqlite-wal
+# GraphRAG / enrich-queue SQLite — OBRIGATÓRIO em QUALQUER pasta (raiz e subdirs)
+**/graphrag.sqlite
+**/graphrag.sqlite-shm
+**/graphrag.sqlite-wal
+**/.enrich-queue.sqlite
+**/.enrich-queue.sqlite-shm
+**/.enrich-queue.sqlite-wal
+# basename (sem slash) também casa em qualquer diretório no gitignore
 graphrag.sqlite
 graphrag.sqlite-shm
 graphrag.sqlite-wal
+.enrich-queue.sqlite
+.enrich-queue.sqlite-shm
+.enrich-queue.sqlite-wal
 
 # === Artefatos locais de build (nunca versionar) ===
 /rust_out
@@ -181,10 +198,18 @@ rust_out
 .cargo/
 *.crate
 
-# === Bancos SQLite e WAL (padroes) ===
+# === Bancos SQLite e WAL (qualquer pasta; graphrag + enrich-queue + genéricos) ===
+# Catch-all por extensão (inclui graphrag.sqlite e .enrich-queue.sqlite em subpastas)
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+# Nomes canônicos GraphRAG / fila de enrich — path absoluto relativo a qualquer profundidade
+**/graphrag.sqlite
+**/graphrag.sqlite-shm
+**/graphrag.sqlite-wal
+**/.enrich-queue.sqlite
+**/.enrich-queue.sqlite-shm
+**/.enrich-queue.sqlite-wal
 *.db
 *.db-shm
 *.db-wal

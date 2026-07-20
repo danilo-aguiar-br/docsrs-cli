@@ -1,26 +1,36 @@
 # docsrs-cli
 > One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
 
-docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 0.1.2.
+docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 1.2.0.
 
-## Release 0.1.2 agent surface
+## Release 1.2.0 agent surface (Camada Y)
+- Method missing `#method.X` → `ok=false` / `not_found` (exit 66); never parent-page false success
+- Successful method fetch sets `data.extraction` to `method` only; agents MUST reject missing/`item_page`
+- `--suggest` on method 404 ranks method leaves from the parent type HTML
+- Error envelopes include top-level `command` and `duration_ms` (parity with success)
+- Budget flags above hard max fail closed with exit 65 (no silent clamp)
+- Body over configured `--max-body-bytes` (within hard max) is `error.kind=budget`, exit 74, `retryable=false`
+- Method 404 `source_url` keeps the first probe kind (`struct`), not the last
+- Dry-run documents `validation=url_shape_only` and parent kind probes
+- Offline schemas: 19 wire names matching `schema --cmd all` (includes cache/config aliases)
+- Skills EN/PT MUST reject method success when `extraction` is not `method`
+
+## Release surface retained from 1.1.x
 - `--match exact|prefix|substring` on search-in-crate (default prefix)
 - `--page-token` on search-crates without positional query when the token carries the full query
 - `--page-token` success and dry-run echo `query`/`page`/`per_page`/`sort` from the **effective URL**
-- `--suggest` on get-item 404 ranks exact → prefix → substring → edit-distance (one all.html fetch)
-- Associated-method `get-item` scopes markdown to the method; optional `data.extraction` is `method` or `item_page`
-- Body over `--max-body-bytes` is `error.kind=budget`, exit 74, **`retryable=false`** (do not retry storms)
+- `--suggest` ranks exact → prefix → substring → edit-distance
 - `doctor` top-level `ok` mirrors `data.ok` (exit 78 when unhealthy)
 - Explicit `--timeout 0` / `--connect-timeout 0` fail-closed with exit 65
 - `item_path` accepts hyphens and normalizes to underscores (rustc paths)
-- Markdown scrub removes rustdoc chrome (`§`, “Copy item path”)
+- Markdown scrub removes rustdoc chrome (`§`, "Copy item path")
 - `doctor --online` for DNS probes to crates.io and docs.rs
 - `data.cache_hit` on network payloads (local disk cache only)
 - Canonical wire field `crate_name`
 - `item_name` on get-item; associated methods resolve to `#method.name`
 - `resolved_version` for concrete SemVer or stdlib channel `stable`
 - Ranked hit `score` on search-in-crate
-- Product knobs: CLI flags + XDG config.toml only (path sandbox env remains)
+- Product knobs: CLI flags + XDG config.toml only (no product `DOCSRS_CLI_*` env)
 - Completions emit raw shell scripts unless `--json` is explicit
 - Human pre-release smoke: `scripts/smoke-live.sh` (not CI)
 
@@ -35,11 +45,11 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [Cookbook pt-BR](docs/COOKBOOK.pt-BR.md): receitas em português
 - [Cross platform](docs/CROSS_PLATFORM.md): Linux macOS Windows matrix
 - [Cross platform pt-BR](docs/CROSS_PLATFORM.pt-BR.md): matriz multiplataforma
-- [Migration](docs/MIGRATION.md): migration from 0.1.x / 1.1.x to 0.1.2
+- [Migration](docs/MIGRATION.md): migration notes through 1.2.0
 - [Migration pt-BR](docs/MIGRATION.pt-BR.md): notas de migração
 - [Testing](docs/TESTING.md): test categories, how to run, smoke-live
 - [Testing pt-BR](docs/TESTING.pt-BR.md): guia de testes
-- [JSON schemas index](docs/schemas/README.md): schema inventory
+- [JSON schemas index](docs/schemas/README.md): schema inventory (19 files)
 - [get-item schema](docs/schemas/get-item.schema.json)
 - [readme schema](docs/schemas/readme.schema.json)
 - [search-crates schema](docs/schemas/search-crates.schema.json)
@@ -68,7 +78,7 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md) / [pt-BR](docs/decisions/0001-http-retry-policy.pt-BR.md)
 - [Error model ADR](docs/decisions/0002-error-model.md) / [pt-BR](docs/decisions/0002-error-model.pt-BR.md)
 - [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md) / [pt-BR](docs/decisions/0003-web-fetch-scope.pt-BR.md)
-- [gaps.md](gaps.md): closed product gap matrix for 0.1.2 (GAP-001…018)
+- [gaps.md](gaps.md): product gap matrix (Camada Y §26 closes GAP-W-001…010 and GAP-X-001…010)
 
 ## Optional
 - [llms.txt](llms.txt): short discovery document

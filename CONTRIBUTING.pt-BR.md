@@ -55,6 +55,9 @@ RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no
 - Atualize docs públicos em inglês e português na mesma entrega
 - Mantenha tokens técnicos sem tradução
 - Indexe todo JSON schema novo em `docs/schemas/README.md`
+- Dogfood de produto com `./target/release/docsrs-cli` (PATH pode atrasar o tree)
+- Prefira `cargo audit --no-fetch` se o index do advisory DB travar
+- Mantenha docs bilíngues e com versão alinhada a `Cargo.toml` em cada release
 - Espelhe conhecimento operacional em `skills/docsrs-cli-en` e `skills/docsrs-cli-pt`
 
 

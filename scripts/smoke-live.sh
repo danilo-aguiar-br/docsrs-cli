@@ -21,7 +21,7 @@ run() {
 
 echo "== version =="
 ver="$(run version --json)"
-echo "$ver" | grep -q '"version":"0.1.2"'
+echo "$ver" | grep -q '"version":"1.1.2"'
 
 echo "== doctor =="
 run doctor --json | grep -q '"ok":true'

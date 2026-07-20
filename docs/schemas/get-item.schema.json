@@ -59,7 +59,11 @@
     "extraction": {
       "type": "string",
       "enum": ["method", "item_page"],
-      "description": "Present for associated-method fetches: method-scoped markdown vs full parent item page fallback. Omitted for non-method items (never JSON null)."
+      "description": "Present for associated-method success: always method when the anchor was found (1.2.0+ fail-closed). item_page is legacy and MUST NOT appear on success — missing anchors return not_found exit 66. Omitted for non-method items."
+    },
+    "resolved_item_path": {
+      "type": "string",
+      "description": "Canonical rustdoc path when a root/reexport path was resolved via all.html. Omitted when the requested path was used as-is (never JSON null)."
     }
   },
   "additionalProperties": false

@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use tokio::time::{Instant, timeout};
 
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, EXIT_INTERRUPTED, ErrorKind};
 
 /// Which OS signal cancelled the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,7 +323,7 @@ pub fn spawn_double_interrupt_force_exit() -> tokio::task::JoinHandle<()> {
                     let _ = writeln_force_hint();
                     flush_stdio();
                     // Force path only: cooperative cleanup already had a chance on first SIGINT.
-                    std::process::exit(130);
+                    std::process::exit(i32::from(EXIT_INTERRUPTED));
                 }
                 Ok(None) => {
                     // Signal stream ended; do not force-exit.
@@ -348,7 +348,7 @@ pub fn spawn_double_interrupt_force_exit() -> tokio::task::JoinHandle<()> {
                     if first.elapsed() <= Duration::from_secs(DOUBLE_INTERRUPT_FORCE_SECS) {
                         let _ = writeln_force_hint();
                         flush_stdio();
-                        std::process::exit(130);
+                        std::process::exit(i32::from(EXIT_INTERRUPTED));
                     }
                 }
                 _ => {}
@@ -362,7 +362,7 @@ fn writeln_force_hint() -> std::io::Result<()> {
     let mut err = std::io::stderr();
     writeln!(
         err,
-        "docsrs-cli: second interrupt within {DOUBLE_INTERRUPT_FORCE_SECS}s; forcing exit 130"
+        "docsrs-cli: second interrupt within {DOUBLE_INTERRUPT_FORCE_SECS}s; forcing exit {EXIT_INTERRUPTED}"
     )?;
     err.flush()
 }

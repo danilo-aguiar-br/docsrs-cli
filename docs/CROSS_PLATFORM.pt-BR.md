@@ -25,7 +25,7 @@
 
 ## Notas macOS
 - Paths vêm do layout de plataforma do crate `directories`
-- TLS é apenas rustls; sem dependência OpenSSL em runtime
+- TLS é apenas rustls (`provider=ring`); sem dependência OpenSSL em runtime (ADR 0007)
 - Completions funcionam para bash, zsh e fish comuns no macOS
 
 ## Notas Windows
@@ -36,10 +36,10 @@
 
 ## Containers
 - Instale com `cargo install docsrs-cli --locked` no build da imagem
-- Defina `DOCSRS_CLI_HOME` para volume sandbox gravável
-- Forneça CA roots para rustls validar HTTPS público
+- Passe `--config-dir` / `--cache-dir` para volumes graváveis (ou confie no XDG/AppData sob home gravável)
+- Forneça raízes CA para o rustls validar HTTPS público
 - Prefira usuários non-root com home gravável ou dirs explícitos de config/cache
-- Knobs de produto ainda vêm de flags e `config.toml`, não de chaves de env de produto
+- Knobs de produto vêm só de flags e `config.toml` (nunca env de produto `DOCSRS_CLI_*`)
 
 ## Suporte a Shell
 - Completions: bash, zsh, fish, elvish, powershell, power-shell
@@ -52,11 +52,9 @@
 - Nunca hardcode separadores; a CLI usa `PathBuf`
 - Precedência de path:
   1. Flags CLI `--config-dir` / `--cache-dir`
-  2. Env de path sandbox `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR`
-  3. `DOCSRS_CLI_HOME` (`{HOME}/config` e `{HOME}/cache`)
-  4. ProjectDirs / layout XDG da plataforma
-- Knobs de produto (timeouts, retries, UA, origins, TTL de cache, …) usam só flags + TOML
-- Knobs de produto não são lidos de variáveis de ambiente `DOCSRS_CLI_*`
+  2. ProjectDirs / XDG (Linux), AppData (Windows), Library (macOS)
+- Knobs de produto (timeouts, retries, UA, origins, cache TTL, …) usam só flags + TOML
+- Knobs e paths de produto não são lidos de variáveis `DOCSRS_CLI_*`
 - `config path --json` imprime a camada vencedora para auditorias
 
 ## Performance por Target
@@ -70,4 +68,4 @@
 - Use as skills empacotadas como fonte operacional de verdade
 - Valide offline com `docsrs-cli doctor --json` em cada classe de host que você envia
 - Valide conectividade live com `docsrs-cli doctor --online --json` em cada classe de host
-- Confirme que `docsrs-cli version --json` reporta `0.1.2` (ou 0.1.x mais novo) após o deploy
+- Confirme que `docsrs-cli version --json` reporta `1.2.0` (ou 1.2.x mais novo) após o deploy

@@ -77,20 +77,32 @@ impl ItemKind {
     ///
     /// Returns [`ErrorKind::InvalidInput`] when `input` is not a known kind alias.
     pub fn parse(input: &str) -> AppResult<Self> {
+        Ok(Self::parse_with_echo(input)?.0)
+    }
+
+    /// Parse kind for URL building plus the wire echo string for `item_type`.
+    ///
+    /// `method` maps to [`ItemKind::Fn`] for rustdoc URLs but echoes as `"method"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] when `input` is not a known kind alias.
+    pub fn parse_with_echo(input: &str) -> AppResult<(Self, &'static str)> {
         let s = input.trim().to_ascii_lowercase();
         match s.as_str() {
-            "module" | "mod" => Ok(Self::Module),
-            "struct" => Ok(Self::Struct),
-            "trait" => Ok(Self::Trait),
-            "enum" => Ok(Self::Enum),
-            "union" => Ok(Self::Union),
-            "fn" | "function" | "method" => Ok(Self::Fn),
-            "type" => Ok(Self::Type),
-            "const" | "constant" => Ok(Self::Constant),
-            "static" => Ok(Self::Static),
-            "macro" => Ok(Self::Macro),
-            "attr" | "attribute" => Ok(Self::Attribute),
-            "derive" => Ok(Self::Derive),
+            "module" | "mod" => Ok((Self::Module, "module")),
+            "struct" => Ok((Self::Struct, "struct")),
+            "trait" => Ok((Self::Trait, "trait")),
+            "enum" => Ok((Self::Enum, "enum")),
+            "union" => Ok((Self::Union, "union")),
+            "fn" | "function" => Ok((Self::Fn, "fn")),
+            "method" => Ok((Self::Fn, "method")),
+            "type" => Ok((Self::Type, "type")),
+            "const" | "constant" => Ok((Self::Constant, "constant")),
+            "static" => Ok((Self::Static, "static")),
+            "macro" => Ok((Self::Macro, "macro")),
+            "attr" | "attribute" => Ok((Self::Attribute, "attribute")),
+            "derive" => Ok((Self::Derive, "derive")),
             other => Err(AppError::new(
                 ErrorKind::InvalidInput,
                 format!("unknown item type '{other}'"),
@@ -151,6 +163,12 @@ mod tests {
     fn fn_aliases() {
         assert_eq!(ItemKind::parse("fn").unwrap(), ItemKind::Fn);
         assert_eq!(ItemKind::parse("function").unwrap(), ItemKind::Fn);
+        assert_eq!(ItemKind::parse("method").unwrap(), ItemKind::Fn);
+        let (k, echo) = ItemKind::parse_with_echo("method").unwrap();
+        assert_eq!(k, ItemKind::Fn);
+        assert_eq!(echo, "method");
+        let (_, echo) = ItemKind::parse_with_echo("fn").unwrap();
+        assert_eq!(echo, "fn");
     }
 
     #[test]

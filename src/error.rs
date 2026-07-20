@@ -34,6 +34,33 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+// ── Named process exit codes (sysexits-inspired + signal/convention) ─────────
+// Every `ExitCode::from(N)` / `process::exit(N)` in product code must use these
+// (or [`ErrorKind::exit_code`]) — never raw numeric literals for exit status.
+
+/// Clap / argv usage error (sysexits `EX_USAGE`).
+pub const EXIT_USAGE: u8 = 64;
+/// Domain validation failure (invalid crate name, path, pagination).
+pub const EXIT_INVALID_INPUT: u8 = 65;
+/// Remote resource missing (HTTP 404).
+pub const EXIT_NOT_FOUND: u8 = 66;
+/// Rate limit or temporary remote unavailability (HTTP 429/5xx).
+pub const EXIT_UNAVAILABLE: u8 = 69;
+/// Unexpected internal failure.
+pub const EXIT_INTERNAL: u8 = 70;
+/// Transport / network failure or local body budget.
+pub const EXIT_NETWORK: u8 = 74;
+/// Local configuration error (XDG TOML, origins).
+pub const EXIT_CONFIG: u8 = 78;
+/// Wall-clock deadline exceeded.
+pub const EXIT_TIMEOUT: u8 = 124;
+/// SIGINT / Ctrl-C cooperative cancel.
+pub const EXIT_INTERRUPTED: u8 = 130;
+/// stdout EPIPE / broken pipe.
+pub const EXIT_BROKEN_PIPE: u8 = 141;
+/// SIGTERM / SIGHUP terminate.
+pub const EXIT_TERMINATED: u8 = 143;
+
 /// Canonical error kinds exposed in JSON envelopes.
 ///
 /// Marked `#[non_exhaustive]` so new kinds can ship without a SemVer major break
@@ -99,18 +126,18 @@ impl ErrorKind {
     /// Process exit code for this kind.
     pub fn exit_code(self) -> u8 {
         match self {
-            Self::Usage => 64,
-            Self::InvalidInput => 65,
-            Self::NotFound => 66,
-            Self::RateLimited | Self::Unavailable => 69,
-            Self::Network | Self::Budget => 74,
-            Self::Timeout => 124,
-            Self::Parse => 65,
-            Self::Config => 78,
-            Self::Internal => 70,
-            Self::Interrupted => 130,
-            Self::Terminated => 143,
-            Self::BrokenPipe => 141,
+            Self::Usage => EXIT_USAGE,
+            Self::InvalidInput => EXIT_INVALID_INPUT,
+            Self::NotFound => EXIT_NOT_FOUND,
+            Self::RateLimited | Self::Unavailable => EXIT_UNAVAILABLE,
+            Self::Network | Self::Budget => EXIT_NETWORK,
+            Self::Timeout => EXIT_TIMEOUT,
+            Self::Parse => EXIT_INVALID_INPUT,
+            Self::Config => EXIT_CONFIG,
+            Self::Internal => EXIT_INTERNAL,
+            Self::Interrupted => EXIT_INTERRUPTED,
+            Self::Terminated => EXIT_TERMINATED,
+            Self::BrokenPipe => EXIT_BROKEN_PIPE,
         }
     }
 
@@ -133,6 +160,18 @@ impl ErrorKind {
     /// as if the remote failed.
     pub fn is_permanent(self) -> bool {
         !self.retryable()
+    }
+
+    /// Detailed retry category (Rules Rust checklist `retry_kind`).
+    pub fn retry_kind(self) -> crate::retry::RetryKind {
+        use crate::retry::RetryKind;
+        match self {
+            Self::RateLimited => RetryKind::RateLimited,
+            Self::Unavailable => RetryKind::TransientServer,
+            Self::Timeout => RetryKind::Timeout,
+            Self::Network => RetryKind::TransientNetwork,
+            _ => RetryKind::Permanent,
+        }
     }
 }
 
@@ -259,6 +298,11 @@ impl AppError {
         self.kind().is_permanent()
     }
 
+    /// Detailed retry category (Rules Rust checklist `retry_kind`).
+    pub fn retry_kind(&self) -> crate::retry::RetryKind {
+        self.kind().retry_kind()
+    }
+
     /// Maps this error to a process [`ExitCode`].
     pub fn exit_code(&self) -> ExitCode {
         ExitCode::from(self.kind().exit_code())
@@ -277,6 +321,11 @@ impl AppError {
             404 => Self::new(
                 ErrorKind::NotFound,
                 format!("resource not found: {body_hint}"),
+            ),
+            // 408 Request Timeout — transient; agent may retry with backoff.
+            408 => Self::new(
+                ErrorKind::Timeout,
+                format!("remote request timeout (HTTP 408): {body_hint}"),
             ),
             429 => Self::new(
                 ErrorKind::RateLimited,
@@ -327,7 +376,10 @@ mod tests {
         assert_eq!(AppError::interrupted().kind(), ErrorKind::Interrupted);
         assert_eq!(AppError::terminated().kind(), ErrorKind::Terminated);
         assert_eq!(AppError::broken_pipe().kind(), ErrorKind::BrokenPipe);
-        assert_eq!(AppError::broken_pipe().exit_code(), ExitCode::from(141));
+        assert_eq!(
+            AppError::broken_pipe().exit_code(),
+            ExitCode::from(EXIT_BROKEN_PIPE)
+        );
     }
 
     #[test]
@@ -396,6 +448,18 @@ mod tests {
         assert!(c.is_retryable());
         assert!(!c.is_permanent());
         assert!(AppError::new(ErrorKind::NotFound, "missing").is_permanent());
+        assert_eq!(
+            c.retry_kind(),
+            crate::retry::RetryKind::TransientNetwork
+        );
+        assert_eq!(
+            AppError::new(ErrorKind::Budget, "cap").retry_kind(),
+            crate::retry::RetryKind::Permanent
+        );
+        assert_eq!(
+            ErrorKind::Timeout.retry_kind(),
+            crate::retry::RetryKind::Timeout
+        );
     }
 
     #[test]
@@ -405,5 +469,20 @@ mod tests {
         assert_eq!(s, "invalid config.toml");
         assert!(!s.ends_with('.'));
         assert_eq!(s, s.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn with_source_display_does_not_embed_cause() {
+        use std::error::Error as _;
+        let e = AppError::with_source(
+            ErrorKind::Parse,
+            "html to markdown conversion failed",
+            std::io::Error::other("inner cause text"),
+        );
+        assert_eq!(e.to_string(), "html to markdown conversion failed");
+        assert!(!e.to_string().contains("inner cause text"));
+        assert!(e.source().is_some());
+        assert!(e.source().unwrap().to_string().contains("inner cause text"));
+        assert_eq!(e.to_string(), e.to_string().to_ascii_lowercase());
     }
 }

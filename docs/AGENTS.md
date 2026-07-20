@@ -7,7 +7,7 @@
 - Stable JSON beats fragile HTML scraping
 - One process per question keeps state honest
 - Exit codes make retry policy mechanical
-- Product line is `0.1.x` (`version` reports `0.1.2`)
+- Product line is `1.2.x` (`version` reports `1.2.0`)
 
 ## Economy
 - Disk cache removes repeat downloads inside TTL
@@ -31,7 +31,7 @@
 - Lifecycle is always one-shot: BORN, EXECUTE, FINALIZE, DIE
 - Stdout is the data contract; stderr is diagnostics only
 - JSON field names and technical error messages are always English
-- Human stderr may localize via `--lang` or `DOCSRS_CLI_LANG` (pt-BR / en)
+- Human stderr may localize via `--lang` or `--lang` (pt-BR / en)
 - JSON is automatic when stdout is not a TTY for most commands
 - Force JSON with `--json` or `--format json`
 - Force human with `--format markdown` or `--format text`
@@ -49,7 +49,7 @@
 - Run `docsrs-cli schema --cmd <name> --json` before parsing new fields
 - Run `docsrs-cli doctor --json` when paths or TLS look wrong
 - Run `docsrs-cli doctor --online --json` when you need live host probes
-- Confirm `docsrs-cli version --json` reports `0.1.2` (or newer 0.1.x)
+- Confirm `docsrs-cli version --json` reports `1.2.0` (or newer 1.2.x)
 
 ## Contract: Success Envelope
 - Success JSON includes `schema_version`, `ok`, `command`, `data`, `duration_ms`
@@ -63,7 +63,9 @@
 - `search-crates` data: `query`, `page`, `per_page`, `sort`, `hits`, `meta`, `cache_hit` — echo fields always match the effective request URL (including `--page-token`)
 - `search-crates` meta may include `next_page` / `prev_page` for `--page-token`
 - `readme` data: `crate_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `cache_hit`; optional `resolved_version`
-- `get-item` data: `crate_name`, `item_type`, `item_path`, `item_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `title`, `cache_hit`; optional `resolved_version`, optional `extraction` (`method`|`item_page`)
+- `get-item` data: `crate_name`, `item_type`, `item_path`, `item_name`, `version`, `markdown`, `empty`, `truncated`, `source_url`, `title`, `cache_hit`; optional `resolved_version`; method success includes `extraction=method` only
+- MUST reject method success when `extraction` is missing or is legacy `item_page` (fail-closed since 1.2.0)
+- Missing `#method.X` is `not_found` (exit 66), never a parent-page false success
 - `search-in-crate` data: `crate_name`, `query`, `version`, `match_mode`, `total`, `emitted`, `hits`, `truncated`, `source_url`, `cache_hit`; optional `item_type`
 - `search-in-crate` default `--match` is `prefix` (use `substring` for legacy contains)
 - `search-in-crate` hits: `name`, `kind`, `url`; optional `score`
@@ -73,14 +75,15 @@
 - Wire field is always `crate_name` (never `crate`)
 
 ## Contract: Error Envelope
-- Failure JSON is a top-level envelope: `schema_version`, `ok:false`, `error`
+- Failure JSON is a top-level envelope: `schema_version`, `ok:false`, `command`, `duration_ms`, `error`
 - `error` always has `code`, `kind`, `message`, and `retryable`
 - Optional `error.retry_after_secs` is omitted when absent (never JSON null)
 - Message text is technical English; never secrets or raw response bodies
 - Human path failures leave stdout empty and write one stderr line
 - Branch on process exit code before trusting any field
 - Retry only when `error.retryable` is true (typically rate_limited/unavailable/timeout/network)
-- Do not retry `kind=budget` (body over `--max-body-bytes`; raise the cap instead)
+- Do not retry `kind=budget` (body over `--max-body-bytes`; raise the cap only within hard max)
+- Budget flags above hard max fail closed with exit `65` (no silent clamp)
 - Exit `74` is shared by `network` (retryable) and `budget` (not retryable) — always read `error.kind` / `error.retryable`
 - Explicit `--timeout 0` / `--connect-timeout 0` fail-closed with exit `65`
 - `max_output_bytes` truncates success payloads (`truncated:true`); body over cap is a hard error (`budget`)
@@ -186,7 +189,7 @@ docsrs-cli --dry-run search-in-crate reqwest Client --json
 - Accepted kinds include module, struct, trait, enum, union, fn, function, method, type, const, constant, static, macro, attr, attribute, derive
 - Alias `method` maps like `fn` / `function`
 - Associated methods such as `Runtime::new` resolve to the parent type page plus `#method.name`
-- Method markdown may set `extraction` to `method` (scoped) or `item_page` (parent page fallback)
+- Method markdown success sets `extraction` to `method` only; missing anchors are `not_found` (exit 66), never parent-page fallback success
 - Payload always includes `item_name`
 - Optional `resolved_version` is the concrete SemVer of the target crate only, or the stdlib channel (`stable`) when known
 - Never treat dependency versions on a docs.rs page as the crate version
@@ -221,10 +224,11 @@ docsrs-cli --dry-run search-in-crate reqwest Client --json
 ## Contract: config and path Rules
 - Product settings: CLI flags > XDG `config.toml` > defaults
 - Product knobs are not read from `DOCSRS_CLI_*` env vars
-- Path sandbox still allows `DOCSRS_CLI_HOME`, `DOCSRS_CLI_CONFIG_DIR`, `DOCSRS_CLI_CACHE_DIR`
-- Default User-Agent is `docsrs-cli/0.1.2 (+https://github.com/danilo-aguiar-br/docsrs-cli)`
+- Isolate storage with CLI flags `--config-dir` / `--cache-dir` (never product `DOCSRS_CLI_*` env)
+- Default User-Agent is `docsrs-cli/<version> (+https://github.com/danilo-aguiar-br/docsrs-cli)` (version matches the binary)
 - User-Agent: `--user-agent` or TOML `user_agent`; contact: TOML `contact`
 - Dry-run `planned_params` use `crate_name` (not `crate`)
+- Dry-run `planned_params` may include `validation=url_shape_only`, `planned_parent_kind`, and `parent_kind_probe` for methods
 - Dry-run envelope shape is documented in [dry-run.schema.json](schemas/dry-run.schema.json)
 
 ## Contract: schema Rules

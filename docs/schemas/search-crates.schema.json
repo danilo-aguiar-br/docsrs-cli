@@ -10,7 +10,8 @@
     "sort",
     "hits",
     "meta",
-    "cache_hit"
+    "cache_hit",
+    "truncated"
   ],
   "properties": {
     "query": {
@@ -125,6 +126,10 @@
     "cache_hit": {
       "type": "boolean",
       "description": "True when the HTTP response body was served from the local disk cache"
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when hits were reduced so the success JSON envelope fits --max-output-bytes"
     }
   },
   "additionalProperties": false

@@ -41,7 +41,7 @@ async fn version_json_via_lib() {
 async fn version_text_via_lib() {
     let (code, out, _) = run_args(&["version"]).await;
     assert_code(code, 0);
-    assert!(out.contains("docsrs-cli 0.1.2"));
+    assert!(out.contains(concat!("docsrs-cli ", env!("CARGO_PKG_VERSION"))));
 }
 
 #[tokio::test]
@@ -209,7 +209,7 @@ async fn format_markdown_overrides_auto_json() {
     .await;
     assert_code(code, 0);
     let s = String::from_utf8_lossy(&out);
-    assert!(s.contains("docsrs-cli 0.1.2"));
+    assert!(s.contains(concat!("docsrs-cli ", env!("CARGO_PKG_VERSION"))));
     assert!(!s.trim_start().starts_with('{'));
 }
 
@@ -247,6 +247,16 @@ async fn overrides_timeout_and_quiet() {
 async fn clap_help_exit_success_or_2() {
     let (code, _out, _err) = run_args(&["--help"]).await;
     assert!(code == ExitCode::SUCCESS || code == ExitCode::from(2));
+}
+
+#[tokio::test]
+async fn clap_invalid_value_json_usage_exit_64() {
+    let (code, out, _err) = run_args(&["--timeout", "abc", "--json", "version"]).await;
+    assert_code(code, 64);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["kind"], "usage");
+    assert_eq!(v["error"]["code"], 64);
 }
 
 /// Writer that always fails with BrokenPipe (simulates `app | head` consumer exit).

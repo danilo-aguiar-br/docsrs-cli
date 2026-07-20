@@ -25,7 +25,7 @@
 
 ## macOS Notes
 - Paths come from the `directories` crate platform layout
-- TLS is rustls only; no OpenSSL runtime dependency
+- TLS is rustls only (`provider=ring`); no OpenSSL runtime dependency (ADR 0007)
 - Completions work for bash, zsh, and fish commonly used on macOS
 
 ## Windows Notes
@@ -36,10 +36,10 @@
 
 ## Containers
 - Install with `cargo install docsrs-cli --locked` in the image build
-- Set `DOCSRS_CLI_HOME` for a writable sandbox volume
+- Pass `--config-dir` / `--cache-dir` to writable volumes (or rely on XDG/AppData under a writable home)
 - Provide CA roots so rustls can validate public HTTPS
 - Prefer non-root users with a writable home or explicit config/cache dirs
-- Product knobs still come from flags and `config.toml`, not env product keys
+- Product knobs come from flags and `config.toml` only (never product `DOCSRS_CLI_*` env)
 
 ## Shell Support
 - Completions: bash, zsh, fish, elvish, powershell, power-shell
@@ -52,11 +52,9 @@
 - Never hardcode separators; the CLI uses `PathBuf`
 - Path precedence:
   1. CLI flags `--config-dir` / `--cache-dir`
-  2. Path sandbox env `DOCSRS_CLI_CONFIG_DIR` / `DOCSRS_CLI_CACHE_DIR`
-  3. `DOCSRS_CLI_HOME` (`{HOME}/config` and `{HOME}/cache`)
-  4. ProjectDirs / platform XDG layout
+  2. ProjectDirs / platform XDG (Linux), AppData (Windows), Library (macOS)
 - Product knobs (timeouts, retries, UA, origins, cache TTL, …) use only flags + TOML
-- Product knobs are not read from `DOCSRS_CLI_*` environment variables
+- Product knobs and paths are not read from `DOCSRS_CLI_*` environment variables
 - `config path --json` prints the winning layer for audits
 
 ## Performance by Target
@@ -70,4 +68,4 @@
 - Use the packaged skills as the operational source of truth
 - Validate offline with `docsrs-cli doctor --json` on each host class you ship
 - Validate live connectivity with `docsrs-cli doctor --online --json` on each host class
-- Confirm `docsrs-cli version --json` reports `0.1.2` (or newer 0.1.x) after deploy
+- Confirm `docsrs-cli version --json` reports `1.2.0` (or newer 1.2.x) after deploy

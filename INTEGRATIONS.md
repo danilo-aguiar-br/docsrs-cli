@@ -12,7 +12,7 @@
 - Online doctor probes for crates.io and docs.rs when opted in
 
 
-## Flags Added in 1.1.0 (still current on 0.1.x)
+## Flags Added in 1.1.x (still current on 1.2.x)
 - `--match exact|prefix|substring` on `search-in-crate` (default `prefix`)
 - `--page-token` on `search-crates` for opaque pagination from `meta.next_page`
 - `--suggest` on `get-item` to list nearby symbols after a 404
@@ -22,10 +22,20 @@
 - Product knobs use CLI flags and XDG `config.toml` only, not product `DOCSRS_CLI_*` env vars
 - Optional `resolved_version` on readme and get-item (stdlib channel is `stable`)
 
-## Contract Hardening in 0.1.2
+## Contract Hardening in 1.2.0 (Camada Y)
+- Method missing `#method.X` is `not_found` (exit 66), never parent-page false success
+- Successful method fetch sets `data.extraction` to `method` only
+- Agents MUST reject method success if `extraction` is missing or is legacy `item_page`
+- `--suggest` on method 404 ranks method leaves from the parent type page
+- Error envelopes include top-level `command` and `duration_ms` (parity with success)
+- Budget values above hard max fail closed with exit 65 (no silent clamp to 10 MiB / 2 MiB)
+- Body over configured `--max-body-bytes` (within hard max) is `error.kind=budget` (exit 74, `retryable=false`)
+- Method 404 `source_url` keeps the first probe kind (`struct`), not the last
+- Dry-run reports `validation=url_shape_only` and parent kind probes for methods
+- Offline `docs/schemas` matches `schema --cmd all` (19 wire names including aliases)
+
+## Contract Hardening retained from 1.1.x
 - `--page-token` echoes effective `query` / `page` / `per_page` / `sort` from the planned URL
-- Associated-method `get-item` scopes markdown to the method (`data.extraction` = `method`|`item_page`)
-- Body over `--max-body-bytes` is `error.kind=budget` (exit 74, `retryable=false`)
 - `doctor` top-level `ok` mirrors `data.ok` (exit 78 when unhealthy)
 - `--suggest` ranks exact → prefix → substring → edit-distance
 - Explicit `--timeout 0` / `--connect-timeout 0` fail-closed (exit 65)
@@ -60,9 +70,9 @@
 - Invoke as a one-shot subprocess per operation
 - Pass `--json` or rely on non-TTY auto-JSON
 - Parse `ok`, `command`, `data`, and `duration_ms` on success
-- Parse `ok:false`, `error.kind`, and `error.retryable` on failure
-- Never retry `kind=budget` (exit 74); raise `--max-body-bytes` instead
-- Read `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode`, optional `data.extraction` when present
+- Parse `ok:false`, `command`, `duration_ms`, `error.kind`, and `error.retryable` on failure
+- Never retry `kind=budget` (exit 74); raise `--max-body-bytes` only within hard max (above hard max is exit 65)
+- Read `data.cache_hit`, `data.crate_name`, `data.item_name`, `data.match_mode`; method success requires `data.extraction=method`
 - Treat doctor healthy only when top-level `ok` and `data.ok` are both true
 - Start with `commands --json` and `schema --cmd <name> --json`
 - Prefer `--match prefix` or `exact` for precise symbol lookup
@@ -89,7 +99,7 @@
 ## CI and Scripts
 - Always pass `--json` for stable parsing
 - Treat exit `0` as success and non-zero as failure classes
-- Set `DOCSRS_CLI_HOME` for isolated config and cache paths only
+- Use `--config-dir` / `--cache-dir` for isolated config and cache paths
 - Product knobs come from flags or XDG `config.toml`, not product env vars
 - Do not enable live network tests unless intentional
 

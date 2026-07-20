@@ -1,11 +1,16 @@
-//! Live network tests.
+//! Live network tests (opt-in; **ignored** by default so `cargo test` is honest).
 //!
-//! - crates.io / docs.rs: `DOCSRS_CLI_NETWORK_TESTS=1`
-//! - doc.rust-lang.org stdlib: `DOCSRS_CLI_STDLIB_NETWORK_TESTS=1` (separate policy)
+//! Run with:
+//! ```text
+//! DOCSRS_CLI_NETWORK_TESTS=1 cargo test --test network_live -- --ignored
+//! DOCSRS_CLI_STDLIB_NETWORK_TESTS=1 cargo test --test network_live -- --ignored
+//! ```
 //!
-//! Default suite never opens external sockets.
+//! Suite-only env gates (never product knobs). Default suite never opens external sockets.
 
-use std::process::{Command, Stdio};
+mod common;
+
+use std::process::Command;
 use std::time::Duration;
 
 fn enabled() -> bool {
@@ -23,12 +28,9 @@ fn stdlib_enabled() -> bool {
 }
 
 fn bin() -> Command {
-    // Spawns the product under test (accepted Command::new). stdin closed per native-crate rules.
-    let mut c = Command::new(env!("CARGO_BIN_EXE_docsrs-cli"));
-    c.env_remove("RUST_LOG");
-    c.stdin(Stdio::null());
-    // Respect crawler policy: modest delay already in defaults.
-    c
+    // Product under test only (absolute CARGO_BIN_EXE). Stdio + env via common.
+    // Respect crawler policy: modest delay already in defaults / run_json flags.
+    common::docsrs_cli_cmd()
 }
 
 fn run_json(args: &[&str]) -> (i32, serde_json::Value, String) {
@@ -49,6 +51,7 @@ fn run_json(args: &[&str]) -> (i32, serde_json::Value, String) {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_search_crates_serde() {
     if !enabled() {
         eprintln!("skip: set DOCSRS_CLI_NETWORK_TESTS=1");
@@ -62,6 +65,7 @@ fn live_search_crates_serde() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_readme_tokio() {
     if !enabled() {
         return;
@@ -75,6 +79,7 @@ fn live_readme_tokio() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_readme_async_trait_hyphen() {
     if !enabled() {
         return;
@@ -91,6 +96,7 @@ fn live_readme_async_trait_hyphen() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_get_item_clap_parser() {
     if !enabled() {
         return;
@@ -103,6 +109,7 @@ fn live_get_item_clap_parser() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_search_in_crate_reqwest_client() {
     if !enabled() {
         return;
@@ -115,6 +122,7 @@ fn live_search_in_crate_reqwest_client() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_stdlib_readme_std() {
     if !stdlib_enabled() {
         eprintln!("skip: set DOCSRS_CLI_STDLIB_NETWORK_TESTS=1");
@@ -134,6 +142,7 @@ fn live_stdlib_readme_std() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_stdlib_get_item_option() {
     if !stdlib_enabled() {
         return;
@@ -158,6 +167,7 @@ fn live_stdlib_get_item_option() {
 }
 
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_stdlib_readme_core() {
     if !stdlib_enabled() {
         return;
@@ -175,6 +185,7 @@ fn live_stdlib_readme_core() {
 
 /// G-18: prove search-in-crate against stdlib all.html (or honest NotFound on that host).
 #[test]
+#[ignore = "live network: set DOCSRS_CLI_NETWORK_TESTS=1 (or STDLIB) and cargo test -- --ignored"]
 fn live_stdlib_search_in_crate_option() {
     if !stdlib_enabled() {
         return;
@@ -202,6 +213,18 @@ fn live_stdlib_search_in_crate_option() {
             }),
             "expected Option hit in {hits:?}"
         );
+        // SCRAPE-R-003: hit URLs must join against source_url (stdlib host), not rewrite to docs.rs.
+        for h in hits {
+            let url = h["url"].as_str().unwrap_or("");
+            assert!(
+                url.starts_with("https://doc.rust-lang.org/"),
+                "stdlib hit must stay on doc.rust-lang.org: {url}"
+            );
+            assert!(
+                !url.contains("docs.rs"),
+                "stdlib hit must not rewrite host to docs.rs: {url}"
+            );
+        }
     } else {
         // Honest failure on doc.rust-lang.org (e.g. all.html 404) — must not silently hit docs.rs.
         assert_eq!(

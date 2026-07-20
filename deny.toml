@@ -1,0 +1,52 @@
+# Local supply-chain policy for docsrs-cli (Camada M / ADR 0007).
+# Maintainer tool: `cargo deny check` — not wired to CI (product forbids CI/CD in-tree).
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+# Default cargo-deny advisories: vulnerabilities deny; unmaintained/yanked use tool defaults.
+# Ignore list reserved for documented exceptions (prefer fixing over ignore).
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Fail closed if an alternate TLS stack or dual crypto provider appears (ADR 0007).
+# Note (reqwest 0.13): `rustls-platform-verifier` may pull `schannel` /
+# `security-framework` only for **OS root cert loading**, not as a TLS backend.
+# Those crates are therefore not banned. Still ban native-tls / OpenSSL / aws-lc.
+deny = [
+    { crate = "native-tls", reason = "ADR 0007: rustls-only TLS" },
+    { crate = "openssl", reason = "ADR 0007: no OpenSSL runtime" },
+    { crate = "openssl-sys", reason = "ADR 0007: no OpenSSL runtime" },
+    { crate = "aws-lc-rs", reason = "ADR 0007: ring-only provider (no dual aws-lc + ring)" },
+    { crate = "aws-lc-sys", reason = "ADR 0007: ring-only provider" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

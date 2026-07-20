@@ -5,6 +5,9 @@
 //!
 //! # Out of scope (agent-first network CLI)
 //!
+//! - **External process spawn:** product `src/` never uses `std::process::Command`
+//!   (or `tokio::process`). Docs/crates.io are fetched via `reqwest` only.
+//!   Integration tests may spawn the under-test binary (see `tests/common/`).
 //! - Browser/Chrome path discovery (no external browser binary)
 //! - Windows console UTF-8 code-page bootstrap via raw Win32 (would require
 //!   `unsafe` or a windows-only crate; product has zero `unsafe` in `src/`)

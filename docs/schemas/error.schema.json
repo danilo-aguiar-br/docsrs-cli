@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli JSON error envelope",
   "type": "object",
-  "description": "Top-level JSON written on failure when JSON output is selected. Not nested under data.",
-  "required": ["schema_version", "ok", "error"],
+  "description": "Top-level JSON written on failure when JSON output is selected. Not nested under data. Camada Y: top-level command + duration_ms match success envelopes for agent correlation.",
+  "required": ["schema_version", "ok", "command", "duration_ms", "error"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {
@@ -13,6 +13,15 @@
     "ok": {
       "type": "boolean",
       "const": false
+    },
+    "command": {
+      "type": "string",
+      "description": "Wire command name (get-item, search-crates, usage, cache-path, …). usage when clap fails before dispatch."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock duration of the attempt in milliseconds (0 for early parse/config failures)"
     },
     "error": {
       "type": "object",

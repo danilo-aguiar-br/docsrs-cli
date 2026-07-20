@@ -19,7 +19,7 @@
 //! # Targets
 //!
 //! Events use module paths under `docsrs_cli::…` (e.g. `docsrs_cli::http`,
-//! `docsrs_cli::cache`, `docsrs_cli::telemetry`). Override with `RUST_LOG`
+//! `docsrs_cli::cache`, `docsrs_cli::diagnostics`). Override with `RUST_LOG`
 //! (e.g. `RUST_LOG=docsrs_cli=debug,docsrs_cli::http=trace`).
 //!
 //! # CLI vs env
@@ -69,7 +69,7 @@ pub fn init_tracing(cli: &Cli) {
     match result {
         Ok(()) => {
             tracing::debug!(
-                target: "docsrs_cli::telemetry",
+                target: "docsrs_cli::diagnostics",
                 filter = %filter_display,
                 default_level,
                 ansi,

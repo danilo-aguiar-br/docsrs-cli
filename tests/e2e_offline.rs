@@ -7,15 +7,6 @@ use docsrs_cli::run_with_io;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn allow_localhost() {
-    // SAFETY: test-only process environment mutation before concurrent work.
-    // The variable is a boolean allowlist flag for wiremock localhost origins.
-    // Callers run this from single-threaded test setup, not from production code.
-    unsafe {
-        std::env::set_var("DOCSRS_CLI_ALLOW_LOCALHOST", "1");
-    }
-}
-
 async fn run_with_config(
     config_dir: &std::path::Path,
     args: &[&str],
@@ -24,6 +15,7 @@ async fn run_with_config(
         "docsrs-cli".into(),
         "--config-dir".into(),
         config_dir.display().to_string(),
+        "--allow-loopback".into(),
         "--rate-limit-delay-ms".into(),
         "0".into(),
         "--timeout".into(),
@@ -44,22 +36,20 @@ async fn run_with_config(
 
 fn write_origin_config(dir: &std::path::Path, origin: &str) {
     let body = format!(
-        "crates_io_origin = \"{origin}\"\ndocs_rs_origin = \"{origin}\"\nrate_limit_delay_ms = 0\nmax_retries = 1\n"
+        "allow_loopback = true\ncrates_io_origin = \"{origin}\"\ndocs_rs_origin = \"{origin}\"\nrate_limit_delay_ms = 0\nmax_retries = 1\n"
     );
     std::fs::write(dir.join("config.toml"), body).unwrap();
 }
 
 #[tokio::test]
 async fn e2e_search_crates_json_and_markdown() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .and(query_param("q", "serde"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(include_str!("fixtures/crates_io/search_serde.json")),
+                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
         )
         .mount(&server)
         .await;
@@ -80,14 +70,12 @@ async fn e2e_search_crates_json_and_markdown() {
 
 #[tokio::test]
 async fn e2e_readme_json_and_markdown() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/latest/demo/index.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/readme_docblock.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/readme_docblock.html"), "text/html"),
         )
         .mount(&server)
         .await;
@@ -109,14 +97,12 @@ async fn e2e_readme_json_and_markdown() {
 
 #[tokio::test]
 async fn e2e_get_item_json() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/tokio/latest/tokio/runtime/struct.Runtime.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/get_item_main.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/get_item_main.html"), "text/html"),
         )
         .mount(&server)
         .await;
@@ -144,14 +130,12 @@ async fn e2e_get_item_json() {
 
 #[tokio::test]
 async fn e2e_search_in_crate_json_and_markdown() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/1.0.0/demo/all.html"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/all_html_sample.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/all_html_sample.html"), "text/html"),
         )
         .mount(&server)
         .await;
@@ -239,7 +223,6 @@ async fn e2e_search_in_crate_json_and_markdown() {
 
 #[tokio::test]
 async fn e2e_readme_404_json_error() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/missing/latest/missing/index.html"))
@@ -260,7 +243,6 @@ async fn e2e_readme_404_json_error() {
 #[tokio::test]
 async fn e2e_get_item_mismatched_prefix_still_works() {
     // Covers warn branch for path_crate differing from crate_name with underscore/hyphen.
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(
@@ -268,8 +250,7 @@ async fn e2e_get_item_mismatched_prefix_still_works() {
         ))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(include_str!("fixtures/docs_rs/get_item_main.html")),
+                .set_body_raw(include_str!("fixtures/docs_rs/get_item_main.html"), "text/html"),
         )
         .mount(&server)
         .await;
@@ -295,7 +276,6 @@ async fn e2e_get_item_mismatched_prefix_still_works() {
 
 #[tokio::test]
 async fn e2e_lang_pt_br_human_error() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     // Invalid version triggers human error without network.
     let (code, out, err) = run_with_config(
@@ -317,7 +297,6 @@ async fn e2e_lang_pt_br_human_error() {
 
 #[tokio::test]
 async fn e2e_lang_invalid_fail_closed() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = run_with_config(dir.path(), &["--lang", "ja", "version", "--json"]).await;
     assert_eq!(code, ExitCode::from(65));
@@ -329,7 +308,6 @@ async fn e2e_lang_invalid_fail_closed() {
 /// Invalid TOML must exit 78 via structured emit (never mis-report as internal 70).
 #[tokio::test]
 async fn e2e_invalid_config_toml_exit_78() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config.toml"), "timeout_secs = [\n").unwrap();
     let (code, out, err) = run_with_config(dir.path(), &["version", "--json"]).await;
@@ -352,7 +330,6 @@ async fn e2e_invalid_config_toml_exit_78() {
 
 #[tokio::test]
 async fn e2e_cli_overrides_and_doctor_fail() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     // Doctor fails when user_agent lacks APP_NAME
     std::fs::write(
@@ -373,7 +350,6 @@ async fn e2e_cli_overrides_and_doctor_fail() {
 
 #[tokio::test]
 async fn e2e_full_cli_overrides_version() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     write_origin_config(dir.path(), "https://docs.rs");
     let argv = vec![
@@ -405,7 +381,6 @@ async fn e2e_full_cli_overrides_version() {
 
 #[tokio::test]
 async fn e2e_schema_text_and_all_cmds() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     for cmd in ["readme", "get-item", "search-in-crate", "doctor", "config"] {
         let (code, out, _) = run_with_config(dir.path(), &["schema", "--cmd", cmd]).await;
@@ -416,14 +391,12 @@ async fn e2e_schema_text_and_all_cmds() {
 
 #[tokio::test]
 async fn e2e_search_empty_hits_markdown() {
-    allow_localhost();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_string(r#"{"crates":[],"meta":{"total":0}}"#),
+                .set_body_raw(r#"{"crates":[],"meta":{"total":0}}"#, "application/json"),
         )
         .mount(&server)
         .await;
@@ -436,7 +409,6 @@ async fn e2e_search_empty_hits_markdown() {
 
 #[tokio::test]
 async fn e2e_vv_verbose_dry_run() {
-    allow_localhost();
     let dir = tempfile::tempdir().unwrap();
     let mut out = Vec::new();
     let mut err = Vec::new();

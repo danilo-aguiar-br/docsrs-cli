@@ -125,9 +125,19 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub retry_max_delay_ms: Option<u64>,
 
+    /// Total HTTP retry wall budget in milliseconds (`0` = derive from --timeout)
+    #[arg(long, global = true)]
+    pub retry_max_elapsed_ms: Option<u64>,
+
     /// Disable HTTP retries (incident kill switch / debug)
     #[arg(long, global = true)]
     pub disable_retry: bool,
+
+    /// Allow loopback origins (`127.0.0.1` / `localhost`) for offline wiremock
+    ///
+    /// Also settable via XDG `config.toml` `allow_loopback = true`. Never via env.
+    #[arg(long, global = true)]
+    pub allow_loopback: bool,
 
     /// Increase stderr verbosity
     #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
@@ -180,21 +190,21 @@ pub enum Commands {
     },
     /// Fetch crate overview docblock from docs.rs (not git README)
     Readme {
-        /// Crate name on crates.io or a stdlib crate.
+        /// Crate name on crates.io or a stdlib crate (`name` or `name@1.2.3`).
         crate_name: String,
-        /// Optional crate version (`latest` when omitted).
+        /// Optional crate version (`latest` when omitted). Conflicts if it differs from `crate@…`.
         #[arg(long)]
         crate_version: Option<String>,
     },
     /// Fetch documentation for a typed item
     GetItem {
-        /// Crate name on crates.io or a stdlib crate.
+        /// Crate name on crates.io or a stdlib crate (`name` or `name@1.2.3`).
         crate_name: String,
         /// Kind: module|struct|trait|enum|union|fn|function|method|type|const|constant|static|macro|attr|attribute|derive
         item_type: String,
-        /// Path with `::` or `/` (e.g. `tokio::runtime::Runtime`, `runtime/Runtime`, `async_trait`)
+        /// Path with `::` or `/` (e.g. `Runtime::new`, `runtime/Runtime`, `tokio::spawn`)
         item_path: String,
-        /// Optional crate version (`latest` when omitted).
+        /// Optional crate version (`latest` when omitted). Conflicts if it differs from `crate@…`.
         #[arg(long)]
         crate_version: Option<String>,
         /// On 404, suggest nearby symbols from all.html (one extra request; exact/prefix/substring/edit-distance).
@@ -203,12 +213,12 @@ pub enum Commands {
     },
     /// Search symbols in crate all.html index
     SearchInCrate {
-        /// Crate name on crates.io or a stdlib crate.
+        /// Crate name on crates.io or a stdlib crate (`name` or `name@1.2.3`).
         crate_name: String,
         /// Text filter; empty string lists all classified items
         #[arg(default_value = "")]
         query: String,
-        /// Optional crate version (`latest` when omitted).
+        /// Optional crate version (`latest` when omitted). Conflicts if it differs from `crate@…`.
         #[arg(long)]
         crate_version: Option<String>,
         /// Optional item-kind filter (`struct`, `fn`, `method`, …).
@@ -260,6 +270,8 @@ pub enum Commands {
 /// Cache maintenance subcommands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum CacheAction {
+    /// Print resolved cache root and which layer won
+    Path,
     /// Delete all cached HTTP bodies under the cache dir
     Clear,
     /// Report entry count, total bytes, and budget
@@ -354,7 +366,42 @@ impl Shell {
     }
 }
 
+impl Commands {
+    /// Stable wire command name used in success and error JSON envelopes (DRY).
+    ///
+    /// Nested cache/config actions use the same names as `schema --cmd` aliases
+    /// (`cache-path`, `config-show`, …).
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::SearchCrates { .. } => "search-crates",
+            Self::Readme { .. } => "readme",
+            Self::GetItem { .. } => "get-item",
+            Self::SearchInCrate { .. } => "search-in-crate",
+            Self::Version => "version",
+            Self::Doctor { .. } => "doctor",
+            Self::Commands => "commands",
+            Self::Schema { .. } => "schema",
+            Self::Completions { .. } => "completions",
+            Self::Cache { action } => match action {
+                CacheAction::Path => "cache-path",
+                CacheAction::Clear => "cache-clear",
+                CacheAction::Stats => "cache-stats",
+            },
+            Self::Config { action } => match action {
+                ConfigAction::Path => "config-path",
+                ConfigAction::Show => "config-show",
+                ConfigAction::Init { .. } => "config-init",
+            },
+        }
+    }
+}
+
 impl Cli {
+    /// Wire command name for the active subcommand (error/success envelopes).
+    pub fn wire_command(&self) -> &'static str {
+        self.command.wire_name()
+    }
+
     /// Whether JSON envelope is requested.
     ///
     /// Agent-first rules (stdin/stdout LLM contract):

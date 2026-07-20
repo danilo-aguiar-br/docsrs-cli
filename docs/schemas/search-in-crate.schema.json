@@ -75,7 +75,7 @@
     },
     "truncated": {
       "type": "boolean",
-      "description": "True when total > emitted because --limit cut the hit list"
+      "description": "True when hits were cut by --limit (total > emitted) and/or by --max-output-bytes output budget"
     },
     "source_url": {
       "type": "string",
