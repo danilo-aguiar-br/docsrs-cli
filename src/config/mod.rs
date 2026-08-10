@@ -1,6 +1,6 @@
 //! Configuration: defaults, XDG TOML, CLI override (no product env knobs).
 //!
-//! Split for SRP: [`constants`], [`validate`], [`load`] (paths + TOML + `Config`).
+//! Split for SRP: `constants`, `validate`, `load` (paths + TOML + `Config`).
 
 pub(crate) mod allowlist;
 mod constants;
@@ -8,7 +8,7 @@ mod load;
 mod path_source;
 mod validate;
 
-pub use allowlist::{is_allowlisted_host, is_allowed_origin_scheme_host, normalize_origin};
+pub use allowlist::{is_allowed_origin_scheme_host, is_allowlisted_host, normalize_origin};
 pub use constants::*;
 pub use load::*;
 pub use path_source::{PathSource, resolve_config_dir, resolve_config_dir_with_source};
@@ -18,10 +18,10 @@ pub use validate::*;
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
-    use std::path::{Path, PathBuf};
-    use std::time::Duration;
     use std::fs;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     #[test]
     fn stdlib_crate_reexport() {
@@ -88,7 +88,10 @@ mod tests {
     fn config_load_rejects_oversized_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let huge = format!("# {}\ntimeout_secs = 9\n", "x".repeat(MAX_CONFIG_TOML_BYTES as usize));
+        let huge = format!(
+            "# {}\ntimeout_secs = 9\n",
+            "x".repeat(MAX_CONFIG_TOML_BYTES as usize)
+        );
         fs::write(&path, huge).unwrap();
         let err = Config::load(Some(dir.path().to_path_buf())).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Config);
@@ -129,6 +132,50 @@ mod tests {
         .unwrap();
         let err = Config::load(Some(dir.path().to_path_buf())).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Config);
+    }
+
+    /// The flag and the file must agree on the *rule*, and differ only on the
+    /// *remedy*. `--timeout 0` was already rejected (exit 65), while
+    /// `timeout_secs = 0` was accepted, so one knob had two answers depending on
+    /// which layer supplied it — and `config show` then reported a zero timeout
+    /// as if it were in force.
+    #[test]
+    fn zero_timeouts_in_toml_fail_the_way_the_flag_does() {
+        for key in ["timeout_secs", "connect_timeout_secs"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("config.toml"), format!("{key} = 0\n")).unwrap();
+            let err = Config::load(Some(dir.path().to_path_buf())).unwrap_err();
+            // Config, not InvalidInput: the operator edits a file, not an argument.
+            assert_eq!(err.kind(), ErrorKind::Config, "{key}");
+            assert!(err.message().contains("must be >= 1 second"), "{key}");
+        }
+    }
+
+    /// A tracing filter the subscriber cannot parse used to be swallowed at
+    /// install time, leaving the operator with a key that does nothing and no
+    /// way to learn why. Parsing is pure, so the failure belongs where the file
+    /// is read.
+    #[test]
+    fn unparseable_log_directive_is_rejected_not_swallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "log_directive = \"docsrs_cli=not_a_level\"\n",
+        )
+        .unwrap();
+        let err = Config::load(Some(dir.path().to_path_buf())).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Config);
+        assert!(err.message().contains("log_directive"), "{}", err.message());
+
+        // Control: a directive the subscriber accepts still loads.
+        let ok_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            ok_dir.path().join("config.toml"),
+            "log_directive = \"docsrs_cli=debug\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(Some(ok_dir.path().to_path_buf())).unwrap();
+        assert_eq!(cfg.log_directive.as_deref(), Some("docsrs_cli=debug"));
     }
 
     #[test]
@@ -254,7 +301,8 @@ mod tests {
             format!("max_body_bytes = {huge_body}\nmax_output_bytes = {huge_out}\n"),
         )
         .unwrap();
-        let err = Config::load(Some(dir.path().to_path_buf())).expect_err("over hard max must fail");
+        let err =
+            Config::load(Some(dir.path().to_path_buf())).expect_err("over hard max must fail");
         assert_eq!(err.kind(), crate::error::ErrorKind::Config);
         assert!(
             err.message().contains("hard maximum"),
@@ -341,8 +389,9 @@ mod tests {
         assert_eq!(got.as_deref(), Some(explicit.as_path()));
         assert_eq!(source, PathSource::CliFlag);
 
-        let (cache, csource) =
-            crate::cache::resolve_cache_dir_with_source(Some(PathBuf::from("/tmp/docsrs-cli-policy-cache")));
+        let (cache, csource) = crate::cache::resolve_cache_dir_with_source(Some(PathBuf::from(
+            "/tmp/docsrs-cli-policy-cache",
+        )));
         assert_eq!(
             cache.as_deref(),
             Some(Path::new("/tmp/docsrs-cli-policy-cache"))

@@ -2,7 +2,43 @@
 
 # Migration
 
-## 1.2.0 breaking (from 1.1.x) — Camada Y
+## 1.3.0 breaking (from 1.2.x)
+
+- `cache clear` with no target refuses: exit 64, `kind=usage`, and nothing is deleted
+- Pass `--cache-dir <DIR>` to name the root, or `--yes` to accept the XDG one
+- A 1.2.x script running bare `docsrs-cli cache clear` stops working and clears nothing
+- `config init --force` with no target refuses the same way, with the same two waivers
+- The refusal fires even where no file exists yet, so the answer never depends on the disk
+- Field rename: the `config init` envelope carries `target_source`, and `source` is gone
+- New `error.kind` value `io` at exit 74, for environment I/O such as a full disk
+- A caller matching exhaustively on `kind` must add `io` or its match falls through
+- That failure previously arrived as `internal` at exit 70, so the exit code moved too
+- `retryable` is now `true` for a transient I/O cause where it was always `false`
+- `timeout_secs = 0` and `connect_timeout_secs = 0` in `config.toml` were accepted in 1.2.x and now refuse
+- The refusal happens at load with exit 78 `kind=config`, so an inherited file breaks every command, not one
+- On the flag the same zero still exits 65 `kind=invalid_input`; the code names which layer carried the value
+- Install this line with `cargo install --path . --locked --force`, because 1.3.0 is not published yet
+- `cargo install docsrs-cli` still resolves to the last published release and will not deliver 1.3.0
+
+## 1.3.0 additive (from 1.2.x)
+
+- No 1.2.x field changed type or meaning; the renames and refusals above are the whole break
+- The schema bundle grew from nineteen to **twenty** wire names; an agent asserting the old count must update it
+- New schema `agent-surface` documents the reduction report, previously discovered by trial
+- New global flags `--sort-by` and `--max-items`; the reduction order is now filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- `agent_surface` gained `limited`, which separates a small result from a capped one
+- `get-item` accepts `variant`, `structfield` and the alias `field`; an unqualified `variant Some` exits 65 naming the parent kinds
+- `field` echoes back as `structfield`, which is the spelling rustdoc uses for the anchor
+- `error.suggestions` carries the `--suggest` ranking as data; stop parsing `error.message` prose
+- `anchor_family` reports the real rustdoc family, because `extraction=method` also covers variants and struct fields
+- New `config.toml` key `log_directive`; an unparseable value now fails at load with exit 78
+- `RUST_LOG` is no longer read; move any directive into `log_directive` or use `-q` / `-v`
+- TLS trust anchors returned to bundled `webpki-roots`: a container with no CA store works again, and a proxy rooted only in the OS store now fails
+- Maintainers: `scripts/check-policy.sh` is gone; run `cargo test --test policy_gates`
+- Confirm `docsrs-cli version --json` reports `1.3.0`
+- Full configuration reference: [Configuration](CONFIGURATION.md)
+
+## 1.2.0 breaking (from 1.1.x) — Layer Y
 
 - Method missing `#method.X` is **`not_found` (exit 66)** — no longer a success with parent-page markdown and `extraction=item_page`
 - Successful method fetch always sets `data.extraction` to **`method` only**
@@ -31,7 +67,7 @@
 - Module rename: `diagnostics` (was `telemetry`); still no product telemetry.
 
 ## What Changes
-- Public product line is `1.2.x` (this release is `1.2.0`)
+- At that release the public product line was `1.2.x` (the release itself was `1.2.0`)
 - Dual license remains MIT OR Apache-2.0
 - Documentation framework stays bilingual with skills under `skills/`
 - Command surface for agents remains one-shot JSON on stdout
@@ -41,7 +77,7 @@
 ## Migrating from 1.1.x → 1.2.0
 - Install or upgrade with `cargo install docsrs-cli --locked --force`
 - Run `docsrs-cli version --json` and confirm `data.version` is `1.2.0`
-- Re-read the **1.2.0 breaking** section above (Camada Y) before rewiring agents
+- Re-read the **1.2.0 breaking** section above (Layer Y) before rewiring agents
 - Agent checklist for 1.2.0:
   - Reject method success when `extraction` is missing or is legacy `item_page`
   - Missing method anchors are `not_found` (exit 66), never parent-page markdown success
@@ -49,7 +85,7 @@
   - Failure envelopes expose top-level `command` and `duration_ms` (parity with success)
   - `--suggest` on method 404 ranks method leaves from the parent type page
 - Re-read `docsrs-cli schema --cmd get-item|error|dry-run --json` for `extraction`, error envelope, and dry-run validation fields
-- Optional: `schema --cmd all --json` for the full 19-name wire bundle
+- Optional: `schema --cmd all --json` for the full 20-name wire bundle
 
 ## Historical notes (1.1.x contracts still relevant on 1.1.x/1.2.x)
 - These contracts landed on the 1.1 line and remain true on current `1.2.0` trees (they are not a path *to* 0.1.2)
@@ -65,8 +101,8 @@
 - Optional human smoke: `scripts/smoke-live.sh` (not CI)
 
 ## Migrating from 0.1.x → 1.1.x (historical)
-- Historical path through the 1.1 contracts; current public product is `1.2.0` — after a full upgrade confirm `data.version` is `1.2.0` (not 0.1.2)
-- Install or upgrade with `cargo install docsrs-cli --locked --force`
+- Historical path through the 1.1 contracts; the current tree is `1.3.0` — after a full upgrade confirm `data.version` is `1.3.0` (not 0.1.2)
+- Install or upgrade with `cargo install --path . --locked --force`, since 1.3.0 is unpublished
 - Re-read `docsrs-cli commands --json` if your agent cached an older argv tree
 - Re-read `docsrs-cli schema --cmd <name> --json` before parsing new required fields
 - Point skills and docs links at the current layout and contracts
@@ -163,7 +199,7 @@
 - 1.2.0: method success requires `extraction=method`; missing anchors are `not_found`. Error kind `budget` (exit 74, not retryable) remains; hard-max overshoot is exit 65
 
 ## Step-by-Step Migration
-- Upgrade the binary and confirm version `1.2.0`
+- Upgrade the binary and confirm version `1.3.0`, installing with `cargo install --path . --locked --force`
 - Move any former `DOCSRS_CLI_*` product env settings into flags or `config.toml`
 - Keep path isolation with `--config-dir` / `--cache-dir` as needed
 - Replace bare `search-in-crate` substring assumptions with `--match substring` when required
@@ -202,7 +238,7 @@
 
 ## Rollback
 - Install a previous binary only if you still have that artifact
-- Clear incompatible local experiments with `docsrs-cli cache clear --json`
+- Clear incompatible local experiments with `docsrs-cli cache clear --yes --json`
 - Keep dedicated `--config-dir`/`--cache-dir` sandboxes so rollback does not touch production XDG data
 - Restore any scripts that depended on 0.1 substring match or product env knobs
 

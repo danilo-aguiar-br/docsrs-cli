@@ -9,7 +9,7 @@ use crate::config::{
     HOST_CRATES_IO, HOST_DOC_RUST_LANG_ORG, HOST_DOCS_RS, HOST_STATIC_DOCS_RS, SCHEME_HTTPS,
     is_allowed_origin_scheme_host, normalize_origin,
 };
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, InternalOp, Subject};
 
 /// HTTPS (or gated loopback) origin that passed the product SSRF allowlist.
 ///
@@ -28,7 +28,7 @@ impl AllowedOrigin {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Config`] when the string is not a valid `http`/`https` URL
+    /// Returns [`crate::error::ErrorKind::Config`] when the string is not a valid `http`/`https` URL
     /// with a host (empty, bare path, unsupported scheme, or non-allowlisted host).
     pub fn parse(raw: &str) -> AppResult<Self> {
         Self::parse_with(raw, false)
@@ -43,46 +43,45 @@ impl AllowedOrigin {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Config`] when the string is not a valid `http`/`https` URL
+    /// Returns [`crate::error::ErrorKind::Config`] when the string is not a valid `http`/`https` URL
     /// with a host (empty, bare path, unsupported scheme, or non-allowlisted host).
     pub fn parse_with(raw: &str, allow_loopback: bool) -> AppResult<Self> {
         let normalized = normalize_origin(raw);
         if normalized.is_empty() {
-            return Err(AppError::new(ErrorKind::Config, "origin URL must not be empty"));
+            return Err(AppError::of(ErrorDetail::Empty {
+                subject: Subject::Origin,
+            }));
         }
         let url = url::Url::parse(&normalized).map_err(|e| {
-            AppError::with_source(
-                ErrorKind::Config,
-                format!("invalid origin URL '{normalized}'"),
+            AppError::of_with_source(
+                ErrorDetail::Invalid {
+                    subject: Subject::Origin,
+                    value: normalized.to_string(),
+                },
                 e,
             )
         })?;
         let scheme = url.scheme();
         if scheme != "http" && scheme != "https" {
-            return Err(AppError::new(
-                ErrorKind::Config,
-                format!("origin scheme must be http or https, got '{scheme}'"),
-            ));
+            return Err(AppError::of(ErrorDetail::OriginBadScheme {
+                scheme: scheme.to_string(),
+            }));
         }
         let Some(host) = url.host_str() else {
-            return Err(AppError::new(
-                ErrorKind::Config,
-                format!("origin URL must include a host: '{normalized}'"),
-            ));
+            return Err(AppError::of(ErrorDetail::OriginMissingHost {
+                url: normalized.to_string(),
+            }));
         };
         if !is_allowed_origin_scheme_host(scheme, host, allow_loopback) {
-            return Err(AppError::new(
-                ErrorKind::Config,
-                format!(
-                    "origin host not allowlisted: '{host}' (allowed: {HOST_CRATES_IO}, {HOST_DOCS_RS}, {HOST_STATIC_DOCS_RS}, {HOST_DOC_RUST_LANG_ORG}; loopback requires allow_loopback via CLI or config.toml)"
+            return Err(AppError::of(ErrorDetail::OriginNotAllowlisted {
+                host: host.to_string(),
+                allowed: format!(
+                    "{HOST_CRATES_IO}, {HOST_DOCS_RS}, {HOST_STATIC_DOCS_RS}, {HOST_DOC_RUST_LANG_ORG}"
                 ),
-            ));
+            }));
         }
         // Drop path/query/fragment so origins stay host-level bases.
-        let port = url
-            .port()
-            .map(|p| format!(":{p}"))
-            .unwrap_or_default();
+        let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
         Ok(Self(format!("{scheme}://{host}{port}")))
     }
 
@@ -118,13 +117,14 @@ impl AllowedOrigin {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Internal`] if the stored origin is not a valid URL
+    /// Returns [`crate::error::ErrorKind::Internal`] if the stored origin is not a valid URL
     /// (should not happen for values constructed via this type).
     pub fn to_url(&self) -> AppResult<Url> {
         Url::parse(self.as_str()).map_err(|e| {
-            AppError::with_source(
-                ErrorKind::Internal,
-                format!("allowed origin is not a valid URL: '{}'", self.as_str()),
+            AppError::of_with_source(
+                ErrorDetail::Internal {
+                    op: InternalOp::AllowedOriginUnparseable,
+                },
                 e,
             )
         })

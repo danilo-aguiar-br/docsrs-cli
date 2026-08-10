@@ -84,6 +84,7 @@ fn golden_get_item_markdown_structure() {
         title: "tokio::runtime::Runtime (struct)".into(),
         cache_hit: false,
         extraction: None,
+        anchor_family: None,
         resolved_item_path: None,
     };
     // Prefer stable synthetic body for exact golden match.

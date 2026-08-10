@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::config::MAX_CRATE_NAME_CHARS;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 use super::regex::compile_bounded_regex;
 
@@ -33,8 +33,15 @@ impl CrateName {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] when the name is empty, too long, or
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] when the name is empty, too long, or
     /// contains characters outside the crates.io charset.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the hardcoded crate-name regex fails to compile inside its
+    /// [`std::sync::LazyLock`]. The pattern is a compile-time literal well under
+    /// the bounded `size_limit` / `dfa_size_limit`, so no runtime input can reach
+    /// this path.
     ///
     /// # Examples
     ///
@@ -48,26 +55,25 @@ impl CrateName {
     pub fn parse(name: &str) -> AppResult<Self> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "crate name is empty",
-            ));
+            return Err(AppError::of(ErrorDetail::Empty {
+                subject: Subject::CrateName,
+            }));
         }
         if name.chars().count() > MAX_CRATE_NAME_CHARS {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("crate name exceeds {MAX_CRATE_NAME_CHARS} characters"),
-            ));
+            return Err(AppError::of(ErrorDetail::TooLong {
+                subject: Subject::CrateName,
+                limit: MAX_CRATE_NAME_CHARS,
+            }));
         }
         static RE: LazyLock<Regex> = LazyLock::new(|| {
             compile_bounded_regex(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
                 .expect("hardcoded crate-name regex is valid by construction")
         });
         if !RE.is_match(name) {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("invalid crate name '{name}'"),
-            ));
+            return Err(AppError::of(ErrorDetail::Invalid {
+                subject: Subject::CrateName,
+                value: name.to_string(),
+            }));
         }
         Ok(Self(name.to_string()))
     }
@@ -104,7 +110,7 @@ impl FromStr for CrateName {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for empty, oversized, or illegal names.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for empty, oversized, or illegal names.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }
@@ -117,7 +123,7 @@ impl TryFrom<&str> for CrateName {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for empty, oversized, or illegal names.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for empty, oversized, or illegal names.
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
     }

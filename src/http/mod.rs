@@ -10,8 +10,11 @@
 //!   in-process clock and cross-process lock+stamp.
 //! - **Body budget:** stream with `Content-Length` early reject + `try_reserve*`
 //!   (no unbounded `bytes().await`).
-//! - **TLS:** rustls only (`provider=ring`, floor ≥0.23.18); min TLS 1.2;
-//!   webpki-roots; never `danger_accept_invalid_certs` (ADR 0007).
+//! - **TLS:** rustls only; provider, trust anchors and version floor are the
+//!   constants `content_type::TLS_CRYPTO_PROVIDER`,
+//!   `content_type::TLS_TRUST_ANCHORS` and
+//!   `content_type::RUSTLS_VERSION_FLOOR`, never repeated as literals here;
+//!   min TLS 1.2; never `danger_accept_invalid_certs` (ADR 0007).
 //! - **HTTP/2** enabled (feature `http2`); ALPN negotiates with the origin.
 //! - **Proxy:** system env `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`
 //!   via reqwest `system-proxy` (allowlist still applies to the **target** URL).
@@ -31,7 +34,7 @@
 //! - **Shareable:** methods take `&self`. Per-host in-process clock is a
 //!   `Mutex<HashMap>` with sleep **outside** the lock (no `Mutex` across `.await`
 //!   for the map itself; cross-process flock still owns multi-process throttle).
-//! - **Budget:** each client owns a [`ConcurrencyBudget`] for `spawn_blocking`
+//! - **Budget:** each client owns a [`ConcurrencyBudget`](crate::concurrency::ConcurrencyBudget) for `spawn_blocking`
 //!   parse work (and future multi-GET fan-out). Bound is explicit (auto or
 //!   `--max-concurrency`).
 //! - **Network:** product commands still issue one primary GET at a time; rate
@@ -45,8 +48,8 @@
 //! and HTTP-date. Kill switch `--disable-retry` / TOML `disable_retry` /
 //! `max_retries=0`. See module docs on `retry`.
 //!
-//! Layout (SRP): [`client`] · [`body`] · [`content_type`] · [`allowlist`] ·
-//! [`rate_limit`] · [`constants`].
+//! Layout (SRP): `client` · `body` · `content_type` · `allowlist` ·
+//! `rate_limit` · `constants` (all crate-internal).
 
 mod allowlist;
 mod body;
@@ -54,6 +57,9 @@ mod client;
 mod constants;
 mod content_type;
 mod rate_limit;
+mod tls;
+
+pub use rate_limit::RATE_LIMIT_DIR_NAME;
 
 pub(crate) use allowlist::is_allowed_host;
 pub use body::decode_utf8;
@@ -80,7 +86,7 @@ mod tests {
 
     /// reqwest 0.13 `rustls-no-provider` needs a process CryptoProvider (ring; ADR 0007).
     /// Binary installs in `main`; lib unit tests install once here.
-    fn ensure_ring_provider() {
+    fn ensure_test_provider() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
             let _ = rustls::crypto::ring::default_provider().install_default();
@@ -137,7 +143,7 @@ mod tests {
 
     #[test]
     fn retry_policy_kill_switch() {
-        ensure_ring_provider();
+        ensure_test_provider();
         let cfg = Config {
             disable_retry: true,
             max_retries: 5,
@@ -191,7 +197,15 @@ mod tests {
         let d = client_posture_detail();
         assert!(d.contains("rustls"));
         assert!(d.contains("provider=ring"));
-        assert!(d.contains("0.23.18"));
+        // `doctor` must disclose that this binary carries a C build dependency,
+        // and why the pure-Rust replacements were rejected. A Rust-native claim
+        // that is only true in the source is not auditable from the binary.
+        assert!(d.contains("c-build-dep(ring)"));
+        assert!(d.contains("pure-rust-blocked"));
+        // Read from the constant, not repeated as a literal: asserting the
+        // literal here verified the string against a copy of itself and looked
+        // like coverage while proving nothing about the manifest pin.
+        assert!(d.contains(content_type::RUSTLS_VERSION_FLOOR));
         assert!(d.contains("http2"));
         assert!(d.contains("system-proxy"));
         assert!(d.contains("tcp_nodelay"));
@@ -200,7 +214,7 @@ mod tests {
 
     #[test]
     fn client_builds_with_network_posture() {
-        ensure_ring_provider();
+        ensure_test_provider();
         let cfg = Config {
             rate_limit_delay_ms: 0,
             ..Config::default()

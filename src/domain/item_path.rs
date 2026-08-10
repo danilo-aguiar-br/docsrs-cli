@@ -4,7 +4,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::config::MAX_ITEM_PATH_CHARS;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 /// Validated rustdoc item path (`tokio::runtime::Runtime` or `runtime/Runtime`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -20,18 +20,20 @@ impl ItemPath {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] when the path is empty, too long, or
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] when the path is empty, too long, or
     /// contains `.` / `..` segments.
     pub fn parse(path: &str) -> AppResult<Self> {
         let path = path.trim();
         if path.is_empty() || path == "::" || path == "/" {
-            return Err(AppError::new(ErrorKind::InvalidInput, "item path is empty"));
+            return Err(AppError::of(ErrorDetail::Empty {
+                subject: Subject::ItemPath,
+            }));
         }
         if path.chars().count() > MAX_ITEM_PATH_CHARS {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("item path exceeds {MAX_ITEM_PATH_CHARS} characters"),
-            ));
+            return Err(AppError::of(ErrorDetail::TooLong {
+                subject: Subject::ItemPath,
+                limit: MAX_ITEM_PATH_CHARS,
+            }));
         }
         let normalized = path.replace('/', "::");
         let parts: Vec<String> = normalized
@@ -40,36 +42,30 @@ impl ItemPath {
             .filter(|s| !s.is_empty())
             .collect();
         if parts.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "item path has no segments",
-            ));
+            return Err(AppError::of(ErrorDetail::ItemPathNoSegments));
         }
         let mut segments = Vec::with_capacity(parts.len());
         for seg in &parts {
             if seg == "." || seg == ".." {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    format!("invalid item path segment '{seg}'"),
-                ));
+                return Err(AppError::of(ErrorDetail::Invalid {
+                    subject: Subject::ItemPathSegment,
+                    value: seg.to_string(),
+                }));
             }
             if seg.chars().any(|c| c.is_whitespace()) {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    format!("item path segment contains whitespace: '{seg}'"),
-                ));
+                return Err(AppError::of(ErrorDetail::ContainsWhitespace {
+                    subject: Subject::ItemPathSegment,
+                    value: seg.to_string(),
+                }));
             }
             // Accept hyphen (crates.io style) and normalize to underscore (rustc paths).
             if !seg
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
             {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "invalid item path segment '{seg}' (use letters, digits, underscore or hyphen; hyphens normalize to underscore; separate with :: or /)"
-                    ),
-                ));
+                return Err(AppError::of(ErrorDetail::ItemPathSegmentCharset {
+                    segment: seg.to_string(),
+                }));
             }
             segments.push(crate::item_kind::rustc_crate_name(seg));
         }
@@ -117,7 +113,7 @@ impl FromStr for ItemPath {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for empty, oversized, or illegal paths.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for empty, oversized, or illegal paths.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }

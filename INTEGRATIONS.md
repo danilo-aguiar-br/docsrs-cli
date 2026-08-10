@@ -12,7 +12,28 @@
 - Online doctor probes for crates.io and docs.rs when opted in
 
 
-## Flags Added in 1.1.x (still current on 1.2.x)
+## Command Surface
+- Data commands: `search-crates`, `readme`, `get-item`, `search-in-crate`
+- Discovery commands: `version`, `doctor`, `commands`, `schema`, `completions`
+- Storage commands: `cache path`, `cache stats`, `cache clear`
+- Configuration commands: `config path`, `config show`, `config init`
+- Eleven top-level commands, seventeen invocable paths counting subcommands
+- Every flag and every `config.toml` key: [Configuration](docs/CONFIGURATION.md)
+
+
+## Contract Hardening in 1.3.0
+- `--sort-by` and `--max-items` complete the reduction pipeline; ordering runs before limiting
+- `agent_surface` exposes `limited`, so a caller can tell a small result from a capped one
+- `schema --cmd agent-surface` publishes the reduction report contract
+- `error.suggestions` carries the `--suggest` ranking as data; no agent parses `error.message`
+- `anchor_family` names the real rustdoc family behind `extraction=method`
+- `get-item` reaches `variant` and `structfield`, plus trait associated items and required trait methods
+- `config.toml` key `log_directive`; an unparseable value fails at load with exit 78
+- `RUST_LOG` is not read; it used to outrank the CLI, which is a product knob in env
+- TLS trust anchors are bundled `webpki-roots` again after a `reqwest` upgrade had moved them to the OS store
+
+
+## Flags Added in 1.1.x (retained)
 - `--match exact|prefix|substring` on `search-in-crate` (default `prefix`)
 - `--page-token` on `search-crates` for opaque pagination from `meta.next_page`
 - `--suggest` on `get-item` to list nearby symbols after a 404
@@ -32,7 +53,7 @@
 - Body over configured `--max-body-bytes` (within hard max) is `error.kind=budget` (exit 74, `retryable=false`)
 - Method 404 `source_url` keeps the first probe kind (`struct`), not the last
 - Dry-run reports `validation=url_shape_only` and parent kind probes for methods
-- Offline `docs/schemas` matches `schema --cmd all` (19 wire names including aliases)
+- Offline `docs/schemas` matches `schema --cmd all` (19 wire names including aliases at that release; `agent-surface` arrived in 1.3.0)
 
 ## Contract Hardening retained from 1.1.x
 - `--page-token` echoes effective `query` / `page` / `per_page` / `sort` from the planned URL
@@ -41,6 +62,19 @@
 - Explicit `--timeout 0` / `--connect-timeout 0` fail-closed (exit 65)
 - Human smoke script: `scripts/smoke-live.sh`
 
+
+## Payload Reduction Flags
+- Eight global flags cut the JSON envelope before it is written, so no jq stage is needed
+- `--select KEYS` projects dotted keys (alias `--fields`); missing keys are skipped, never null
+- `--filter EXPR` keeps elements matching `key=value`, `key!=value`, `key~substring`; repeat for AND
+- A malformed `--filter` fails closed with exit 65, never an empty set
+- `--sort-by KEY` sorts ascending and stable; elements without the key go last
+- `--dedupe-by KEY` drops later elements repeating the value
+- `--max-items N` bounds the EMISSION; `search-in-crate --limit` bounds the query
+- `--count-only` replaces the payload with `{"count": N}`
+- `--truncate-content N` shortens strings above N characters, never splitting UTF-8
+- `--max-output-bytes N` caps the emitted payload; hard max 2097152 (2 MiB)
+- Fixed order: filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
 
 ## Flag Aliases
 - `--json` forces the JSON envelope

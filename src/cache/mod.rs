@@ -7,12 +7,14 @@
 //! Budget: optional `max_bytes` evicts oldest entries after each successful put.
 //! `ttl == 0` means entries never hit (always re-fetch).
 //!
-//! Poisoned-entry guards: body reads are capped by [`HARD_MAX_BODY_BYTES`] (and the
+//! Poisoned-entry guards: body reads are capped by [`crate::config::HARD_MAX_BODY_BYTES`] (and the
 //! cache soft budget); meta JSON reads are capped by [`MAX_CACHE_META_BYTES`]. Both
 //! paths use fallible `try_reserve_exact` before filling buffers (never unbounded
 //! `fs::read` / `fs::read_to_string` on attacker-controlled sizes).
 //!
-//! Layout (SRP): [`types`] · [`hex`] · [`meta`] · [`paths`] · [`disk`].
+//! Layout (SRP): `types` · `hex` · `meta` · `paths` · `disk` (all crate-internal).
+//! `disk` splits further by operation: `disk::read` (serve or refuse a hit),
+//! `disk::store` (durable write), `disk::maintain` (inventory and eviction).
 
 mod disk;
 mod hex;
@@ -78,7 +80,12 @@ mod tests {
     #[test]
     fn body_tamper_is_miss() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/x/1/x/all.html").unwrap();
         let resp = sample_resp(&url, b"original");
         cache.put(&url, "text/html", &resp).unwrap();
@@ -91,7 +98,12 @@ mod tests {
     #[test]
     fn get_refuses_body_over_max_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let writer = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/big/1/big/index.html").unwrap();
         let body = vec![b'z'; 200];
         writer
@@ -107,7 +119,12 @@ mod tests {
                 },
             )
             .unwrap();
-        let reader = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 50, false);
+        let reader = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            50,
+            false,
+        );
         assert!(reader.get(&url, "text/html").is_none());
     }
 
@@ -115,7 +132,12 @@ mod tests {
     fn get_refuses_body_over_hard_max_even_when_budget_unlimited() {
         use crate::config::HARD_MAX_BODY_BYTES;
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/poison/1/p/index.html").unwrap();
         let tiny = sample_resp(&url, b"ok");
         cache.put(&url, "text/html", &tiny).unwrap();
@@ -130,7 +152,12 @@ mod tests {
     #[test]
     fn get_refuses_meta_over_cap() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/poison-meta/1/p/index.html").unwrap();
         let tiny = sample_resp(&url, b"ok");
         cache.put(&url, "text/html", &tiny).unwrap();
@@ -161,7 +188,12 @@ mod tests {
     #[test]
     fn non_success_not_stored() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/missing").unwrap();
         let resp = HttpResponse {
             status: StatusCode::NOT_FOUND,
@@ -177,7 +209,12 @@ mod tests {
     #[test]
     fn clear_removes_all_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         for (i, body) in [(1, b"a" as &[u8]), (2, b"bb"), (3, b"ccc")] {
             let url = Url::parse(&format!("https://docs.rs/c{i}/1/c{i}/index.html")).unwrap();
             cache
@@ -198,7 +235,12 @@ mod tests {
     #[test]
     fn max_bytes_evicts_oldest() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 700, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            700,
+            false,
+        );
         let u1 = Url::parse("https://docs.rs/a/1/a/index.html").unwrap();
         let u2 = Url::parse("https://docs.rs/b/1/b/index.html").unwrap();
         let body1 = vec![b'x'; 200];
@@ -240,7 +282,12 @@ mod tests {
     #[test]
     fn max_bytes_skips_body_larger_than_budget() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 100, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            100,
+            false,
+        );
         let url = Url::parse("https://docs.rs/big/1/big/index.html").unwrap();
         let body = vec![b'z'; 500];
         cache
@@ -265,7 +312,12 @@ mod tests {
     #[test]
     fn meta_unknown_field_is_miss() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/extra/1/e/index.html").unwrap();
         cache
             .put(&url, "text/html", &sample_resp(&url, b"ok"))
@@ -284,7 +336,12 @@ mod tests {
     #[test]
     fn meta_bad_digest_shape_is_miss() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = DiskCache::new(dir.path().to_path_buf(), Duration::from_secs(3600), 0, false);
+        let cache = DiskCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+            0,
+            false,
+        );
         let url = Url::parse("https://docs.rs/baddigest/1/b/index.html").unwrap();
         cache
             .put(&url, "text/html", &sample_resp(&url, b"ok"))

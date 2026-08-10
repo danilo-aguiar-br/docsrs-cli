@@ -1,7 +1,14 @@
 # docsrs-cli
 > One-shot stdin/stdout CLI for crates.io and docs.rs documentation for LLM agents.
 
-docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 1.2.0.
+docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.io, fetches docs.rs README overviews and typed rustdoc items, searches in-crate symbol indexes, and validates local readiness with doctor. Stdout is the data contract. Stderr is diagnostics only. JSON is automatic when stdout is not a TTY. Current release is 1.3.0.
+
+## Release 1.3.0 agent surface
+- `data.anchor_family` on get-item reports the rustdoc anchor family the markdown was scoped to (`method`, `tymethod`, `associatedtype`, `associatedconstant`, `variant`, `structfield`)
+- `data.extraction` still reads `method` for every family: it means "scoped to the member anchor", never "the member is a function". Read `anchor_family` for the family and keep asserting `extraction` to reject a parent-page false success
+- `error.suggestions` is an array of `{path, kind}` on a not-found whose `--suggest` ladder found candidates; omitted when it found none, never `null` and never `[]`. The same list stays inside `error.message` for humans — agents read the array instead of splitting that sentence
+- `doctor` reports the TLS provider and its posture token, so an operator auditing a Rust-native binary learns from the binary that `ring` builds C
+- No product environment variable is read anywhere, tests included: live tests are gated by `#[ignore]` alone and run with `cargo test -- --ignored`
 
 ## Release 1.2.0 agent surface (Camada Y)
 - Method missing `#method.X` → `ok=false` / `not_found` (exit 66); never parent-page false success
@@ -12,7 +19,7 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - Body over configured `--max-body-bytes` (within hard max) is `error.kind=budget`, exit 74, `retryable=false`
 - Method 404 `source_url` keeps the first probe kind (`struct`), not the last
 - Dry-run documents `validation=url_shape_only` and parent kind probes
-- Offline schemas: 19 wire names matching `schema --cmd all` (includes cache/config aliases)
+- Offline schemas: 19 wire names matching `schema --cmd all` at that release (cache/config aliases included; `agent-surface` arrived in 1.3.0)
 - Skills EN/PT MUST reject method success when `extraction` is not `method`
 
 ## Release surface retained from 1.1.x
@@ -34,8 +41,33 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - Completions emit raw shell scripts unless `--json` is explicit
 - Human pre-release smoke: `scripts/smoke-live.sh` (not CI)
 
+## Payload Reduction
+- Eight global flags cut the JSON envelope before it is written, so no jq stage is needed
+- `--select KEYS` projects dotted keys (alias `--fields`); when the payload holds a results array it projects the ELEMENTS
+- Missing keys are skipped, never emitted as null
+- `--filter EXPR` keeps elements matching `key=value`, `key!=value`, `key~substring`; `==` is a synonym of `=`
+- Repeat `--filter` to conjoin with AND; a malformed expression fails closed with exit 65, never an empty set
+- `--sort-by KEY` sorts ascending and stable; elements without the key go last
+- `--dedupe-by KEY` drops later elements repeating the value; elements without the key are kept
+- `--max-items N` bounds the EMISSION, never the query; `search-in-crate --limit` bounds the query
+- `--count-only` replaces the payload with `{"count": N}`, counted after filter, dedupe-by and max-items
+- `--truncate-content N` shortens every string above N characters, counting characters and never splitting UTF-8
+- `--max-output-bytes N` caps the emitted payload; hard max 2097152 (2 MiB), above which it fails closed with exit 65
+- Fixed order: filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- Read `agent_surface` for `input_count`, `output_count`, `limited`, `content_truncated`, `output_truncated`
+- `limited` separates "the set was small" from "the set was cut": only then does raising `--max-items` return more
+
+## Command Surface
+- Data: `search-crates`, `readme`, `get-item`, `search-in-crate`
+- Discovery: `version`, `doctor`, `commands`, `schema`, `completions`
+- Storage: `cache path`, `cache stats`, `cache clear`
+- Configuration: `config path`, `config show`, `config init`
+- Eleven top-level commands, seventeen invocable paths counting subcommands
+
 ## Primary Documentation
 - [README](README.md): landing page with install, commands, env, FAQ
+- [Configuration](docs/CONFIGURATION.md): every global flag and every `config.toml` key
+- [Configuration pt-BR](docs/CONFIGURATION.pt-BR.md): referência completa de configuração
 - [README pt-BR](README.pt-BR.md): Portuguese landing page
 - [How to use](docs/HOW_TO_USE.md): install to first success in 60 seconds
 - [How to use pt-BR](docs/HOW_TO_USE.pt-BR.md): guia pedagógico em português
@@ -45,11 +77,11 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [Cookbook pt-BR](docs/COOKBOOK.pt-BR.md): receitas em português
 - [Cross platform](docs/CROSS_PLATFORM.md): Linux macOS Windows matrix
 - [Cross platform pt-BR](docs/CROSS_PLATFORM.pt-BR.md): matriz multiplataforma
-- [Migration](docs/MIGRATION.md): migration notes through 1.2.0
+- [Migration](docs/MIGRATION.md): migration notes through 1.3.0, including the 1.3.0 breaking section
 - [Migration pt-BR](docs/MIGRATION.pt-BR.md): notas de migração
 - [Testing](docs/TESTING.md): test categories, how to run, smoke-live
 - [Testing pt-BR](docs/TESTING.pt-BR.md): guia de testes
-- [JSON schemas index](docs/schemas/README.md): schema inventory (19 files)
+- [JSON schemas index](docs/schemas/README.md): schema inventory (20 files)
 - [get-item schema](docs/schemas/get-item.schema.json)
 - [readme schema](docs/schemas/readme.schema.json)
 - [search-crates schema](docs/schemas/search-crates.schema.json)
@@ -63,6 +95,9 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [completions schema](docs/schemas/completions.schema.json)
 - [error schema](docs/schemas/error.schema.json)
 - [dry-run schema](docs/schemas/dry-run.schema.json)
+- [agent-surface schema](docs/schemas/agent-surface.schema.json)
+- [cache-path schema](docs/schemas/cache-path.schema.json) / [cache-stats schema](docs/schemas/cache-stats.schema.json) / [cache-clear schema](docs/schemas/cache-clear.schema.json)
+- [config-path schema](docs/schemas/config-path.schema.json) / [config-show schema](docs/schemas/config-show.schema.json) / [config-init schema](docs/schemas/config-init.schema.json)
 - [Integrations](INTEGRATIONS.md): agent and platform catalog
 - [Integrations pt-BR](INTEGRATIONS.pt-BR.md)
 - [Changelog](CHANGELOG.md)
@@ -78,6 +113,12 @@ docsrs-cli is a born-execute-finalize-die binary that searches crates on crates.
 - [HTTP retry ADR](docs/decisions/0001-http-retry-policy.md) / [pt-BR](docs/decisions/0001-http-retry-policy.pt-BR.md)
 - [Error model ADR](docs/decisions/0002-error-model.md) / [pt-BR](docs/decisions/0002-error-model.pt-BR.md)
 - [Web fetch scope ADR](docs/decisions/0003-web-fetch-scope.md) / [pt-BR](docs/decisions/0003-web-fetch-scope.pt-BR.md)
+- [Threat model ADR](docs/decisions/0004-threat-model.md) / [pt-BR](docs/decisions/0004-threat-model.pt-BR.md)
+- [Serde validation ADR](docs/decisions/0005-serde-validation-pipeline.md) / [pt-BR](docs/decisions/0005-serde-validation-pipeline.pt-BR.md)
+- [Type-system posture ADR](docs/decisions/0006-type-system-posture.md) / [pt-BR](docs/decisions/0006-type-system-posture.pt-BR.md)
+- [rustls posture ADR](docs/decisions/0007-rustls-posture.md) / [pt-BR](docs/decisions/0007-rustls-posture.pt-BR.md)
+- [Domain-types posture ADR](docs/decisions/0008-domain-types-posture.md) / [pt-BR](docs/decisions/0008-domain-types-posture.pt-BR.md)
+- [Unsafe and FFI posture ADR](docs/decisions/0009-unsafe-ffi-posture.md) / [pt-BR](docs/decisions/0009-unsafe-ffi-posture.pt-BR.md)
 - [gaps.md](gaps.md): product gap matrix (Camada Y §26 closes GAP-W-001…010 and GAP-X-001…010)
 
 ## Optional

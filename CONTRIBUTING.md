@@ -21,8 +21,15 @@ cargo test --locked --all-targets
 - Prefer `cargo run -q -- <args>` during local development
 - Validate rustdoc with:
 ```bash
-RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no-deps --locked
+./scripts/check-docs.sh
+# equivalently, by hand:
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 ```
+- `-D warnings` is the whole lint set on purpose. The narrower pair this file used
+  to teach — `-D missing_docs -D rustdoc::broken_intra_doc_links` — omits
+  `rustdoc::private_intra_doc_links`, the class that produced the last five
+  failures found by a pre-publish run (GAP-DOC-GATE-001). Following the documented
+  command to the letter reported green while the documentation did not build.
 
 
 ## Branching Strategy
@@ -80,6 +87,9 @@ RUSTDOCFLAGS='-D missing_docs -D rustdoc::broken_intra_doc_links' cargo doc --no
 - Update `SECURITY.md` / `SECURITY.pt-BR.md` supported versions line
 - Confirm `docs/MIGRATION.md` covers the release breakings
 - Run offline gates: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked --all-targets`
+- Run every local gate in one command: `./scripts/check-all.sh` — it runs the Rust policy suite (`cargo test --test policy_gates`), then discovers `check-supply.sh` and `check-targets.sh` from the directory, and fails closed on any of them
+- The policy gates are Rust (`tests/policy_gates.rs`), not a shell script: they run on all three supported platforms, with no interpreter and no external CLI
+- On a host without a mingw or Apple cross toolchain: `./scripts/check-all.sh --allow-no-cross`, which records the missing coverage as a decision instead of a silent pass
 - Optional human live smoke: `./scripts/smoke-live.sh` (not CI)
 - Tag only after maintainer approval
 - Publish crates.io only with explicit maintainer authorization

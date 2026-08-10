@@ -1,7 +1,7 @@
 //! Cross-platform filesystem and console helpers.
 //!
 //! Keeps `#[cfg]` conditionals out of business modules. Product code uses
-//! [`PathBuf`] / [`Path`] only — no hardcoded `/` or `\\` separators.
+//! [`PathBuf`](std::path::PathBuf) / [`Path`] only — no hardcoded `/` or `\\` separators.
 //!
 //! # Out of scope (agent-first network CLI)
 //!

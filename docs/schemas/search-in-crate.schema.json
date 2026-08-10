@@ -39,11 +39,13 @@
     },
     "total": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Hits the upstream index classified before --limit. Describes docs.rs, not this envelope, so agent-native reduction never rewrites it."
     },
     "emitted": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Length of the hits array in this envelope. Rewritten when agent-native reduction (--filter, --dedupe-by, --max-items, --max-output-bytes) shrinks the array, so it always matches hits."
     },
     "hits": {
       "type": "array",

@@ -4,7 +4,7 @@
 //! (crate name, query, path, version) lives in [`crate::domain`] (ADR 0006).
 
 use crate::domain::AllowedOrigin;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 use super::constants::{APP_NAME, APP_VERSION, DEFAULT_CONTACT_URL, MAX_USER_AGENT_CHARS};
 
@@ -31,7 +31,7 @@ pub fn default_user_agent(contact: Option<&str>) -> String {
 ///
 /// # Errors
 ///
-/// Propagates [`ErrorKind::Config`] from [`AllowedOrigin::parse`].
+/// Propagates [`crate::error::ErrorKind::Config`] from [`AllowedOrigin::parse`].
 pub fn validate_origin(raw: &str) -> AppResult<AllowedOrigin> {
     AllowedOrigin::parse(raw)
 }
@@ -40,7 +40,7 @@ pub fn validate_origin(raw: &str) -> AppResult<AllowedOrigin> {
 ///
 /// # Errors
 ///
-/// Propagates [`ErrorKind::Config`] from [`AllowedOrigin::parse_with`].
+/// Propagates [`crate::error::ErrorKind::Config`] from [`AllowedOrigin::parse_with`].
 pub fn validate_origin_with(raw: &str, allow_loopback: bool) -> AppResult<AllowedOrigin> {
     AllowedOrigin::parse_with(raw, allow_loopback)
 }
@@ -49,27 +49,25 @@ pub fn validate_origin_with(raw: &str, allow_loopback: bool) -> AppResult<Allowe
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Config`] when empty, over [`MAX_USER_AGENT_CHARS`], or
+/// Returns [`crate::error::ErrorKind::Config`] when empty, over [`MAX_USER_AGENT_CHARS`], or
 /// containing control / non-ASCII bytes (would fail `HeaderValue::from_str`).
 pub fn validate_user_agent(ua: &str) -> AppResult<()> {
     if ua.is_empty() {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            "user-agent must not be empty",
-        ));
+        return Err(AppError::of(ErrorDetail::Empty {
+            subject: Subject::UserAgent,
+        }));
     }
     if ua.chars().count() > MAX_USER_AGENT_CHARS {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            format!("user-agent exceeds {MAX_USER_AGENT_CHARS} characters"),
-        ));
+        return Err(AppError::of(ErrorDetail::TooLong {
+            subject: Subject::UserAgent,
+            limit: MAX_USER_AGENT_CHARS,
+        }));
     }
     // RFC 9110 field values: reject CTL and non-ASCII so HeaderValue cannot fail later.
     if !ua.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            "user-agent must be visible ASCII (no control characters or non-ASCII)",
-        ));
+        return Err(AppError::of(ErrorDetail::NotVisibleAscii {
+            subject: Subject::UserAgent,
+        }));
     }
     Ok(())
 }
@@ -81,26 +79,24 @@ pub fn validate_user_agent(ua: &str) -> AppResult<()> {
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Config`] when empty, over [`MAX_USER_AGENT_CHARS`], or
+/// Returns [`crate::error::ErrorKind::Config`] when empty, over [`MAX_USER_AGENT_CHARS`], or
 /// not visible ASCII.
 pub fn validate_contact(contact: &str) -> AppResult<()> {
     if contact.is_empty() {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            "contact must not be empty when set",
-        ));
+        return Err(AppError::of(ErrorDetail::Empty {
+            subject: Subject::Contact,
+        }));
     }
     if contact.chars().count() > MAX_USER_AGENT_CHARS {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            format!("contact exceeds {MAX_USER_AGENT_CHARS} characters"),
-        ));
+        return Err(AppError::of(ErrorDetail::TooLong {
+            subject: Subject::Contact,
+            limit: MAX_USER_AGENT_CHARS,
+        }));
     }
     if !contact.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
-        return Err(AppError::new(
-            ErrorKind::Config,
-            "contact must be visible ASCII (no control characters or non-ASCII)",
-        ));
+        return Err(AppError::of(ErrorDetail::NotVisibleAscii {
+            subject: Subject::Contact,
+        }));
     }
     Ok(())
 }

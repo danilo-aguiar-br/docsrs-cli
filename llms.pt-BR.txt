@@ -1,33 +1,54 @@
 # docsrs-cli
 > CLI one-shot stdin/stdout para documentação do crates.io e docs.rs para agentes LLM.
 
-docsrs-cli é um binário born-execute-finalize-die que busca crates, busca overviews README e itens rustdoc tipados, e emite envelopes JSON estáveis no stdout com diagnósticos apenas no stderr. A linha atual de release é 1.2.x (release 1.2.0) com method fail-closed (`#method.X` ausente → `not_found` exit 66), envelopes de erro com `command`+`duration_ms`, budget acima do hard max fail-closed (exit 65), match modes `--match`, eco de `--page-token` pela URL efetiva, `--suggest` em cascata (leaves de method na página pai), normalização de hífen em path, scrub de chrome rustdoc, paridade de `ok` no doctor, timeout 0 fail-closed, `schema --cmd all` (19 nomes wire) e `data.cache_hit`.
+docsrs-cli é um binário born-execute-finalize-die que busca crates, busca overviews README e itens rustdoc tipados, e emite envelopes JSON estáveis no stdout com diagnósticos apenas no stderr. A linha atual de release é 1.3.x (release 1.3.0) com method fail-closed (`#method.X` ausente → `not_found` exit 66), envelopes de erro com `command`+`duration_ms`, budget acima do hard max fail-closed (exit 65), match modes `--match`, eco de `--page-token` pela URL efetiva, `--suggest` em cascata (leaves de method na página pai), normalização de hífen em path, scrub de chrome rustdoc, paridade de `ok` no doctor, timeout 0 fail-closed, `schema --cmd all` (20 nomes wire) e `data.cache_hit`.
+
+## Superfície de Comandos
+- Dados: `search-crates`, `readme`, `get-item`, `search-in-crate`
+- Descoberta: `version`, `doctor`, `commands`, `schema`, `completions`
+- Armazenamento: `cache path`, `cache stats`, `cache clear`
+- Configuração: `config path`, `config show`, `config init`
+- Onze comandos de topo, dezessete caminhos invocáveis contando subcomandos
+
+## Redução de Payload
+- Oito flags globais cortam o envelope JSON antes da escrita, dispensando etapa jq
+- `--select CHAVES` projeta chaves pontilhadas (alias `--fields`); chave ausente é pulada, nunca null
+- `--filter EXPR` mantém elementos com `chave=valor`, `chave!=valor`, `chave~substring`; repita para AND
+- `--sort-by CHAVE` ordena ascendente; elementos sem a chave vão para o fim
+- `--dedupe-by CHAVE` descarta elementos posteriores que repetem o valor
+- `--max-items N` limita a EMISSÃO; `search-in-crate --limit` limita a consulta
+- `--count-only` substitui o payload por `{"count": N}`
+- `--truncate-content N` encurta strings acima de N caracteres, sem partir UTF-8
+- `--max-output-bytes N` limita o payload emitido; máximo duro 2097152
+- Ordem fixa: filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- Leia `agent_surface` para `input_count`, `output_count`, `limited`, `content_truncated`, `output_truncated`
 
 ## Documentação Primária
-- [README](README.pt-BR.md): landing page, install, comandos, variáveis de ambiente
+- [README](README.pt-BR.md): landing page, install, comandos, e por que nenhuma variável de ambiente de produto é lida
+- [Configuração](docs/CONFIGURATION.pt-BR.md): toda flag global e toda chave do `config.toml`
 - [Como usar](docs/HOW_TO_USE.pt-BR.md): primeiro comando em 60 segundos
 - [Agentes](docs/AGENTS.pt-BR.md): contrato de integração e economia para agentes
 - [Cookbook](docs/COOKBOOK.pt-BR.md): receitas executáveis
 - [Multiplataforma](docs/CROSS_PLATFORM.pt-BR.md): matriz de SO e paths XDG
-- [Migração](docs/MIGRATION.pt-BR.md): notas de upgrade até 1.2.0 (Camada Y)
+- [Migração](docs/MIGRATION.pt-BR.md): notas de upgrade até 1.3.0
 - [Testes](docs/TESTING.pt-BR.md): como rodar testes categorizados e smoke-live
-- [JSON schemas](docs/schemas/README.md): contratos de payload legíveis por máquina (19 arquivos offline)
+- [JSON schemas](docs/schemas/README.md): contratos de payload legíveis por máquina (20 arquivos offline)
 - [Integrações](INTEGRATIONS.pt-BR.md): agentes, shells e superfícies de CI
-- [Changelog](CHANGELOG.pt-BR.md): histórico Keep a Changelog incluindo 1.2.0
+- [Changelog](CHANGELOG.pt-BR.md): histórico Keep a Changelog incluindo 1.3.0
 - [Segurança](SECURITY.pt-BR.md): reporte de vulnerabilidades
 - [Contribuindo](CONTRIBUTING.pt-BR.md): fluxo do contribuidor
 - [Skill em inglês](skills/docsrs-cli-en/SKILL.md): runbook imperativo (MUST rejeitar method+item_page)
 - [Skill em português](skills/docsrs-cli-pt/SKILL.md): runbook em português
 - [Índice completo](llms-full.txt): mapa expandido de documentação
-- [Descoberta em inglês](llms.txt): short discovery document
+- [Descoberta em inglês](llms.txt): documento curto de descoberta
 - [gaps.md](gaps.md): matriz de gaps de produto (Camada Y fecha W+X; OPEN W+X = 0)
 
 ## Opcional
-- [schema get-item](docs/schemas/get-item.schema.json): item_name, resolved_version, extraction=method em sucesso, cache_hit
+- [schema get-item](docs/schemas/get-item.schema.json): item_name, resolved_version, extraction=method em sucesso, anchor_family (família real da âncora rustdoc), cache_hit
 - [schema search-in-crate](docs/schemas/search-in-crate.schema.json): match_mode, score, cache_hit
 - [schema search-crates](docs/schemas/search-crates.schema.json): page tokens, eco efetivo, cache_hit
 - [schema readme](docs/schemas/readme.schema.json): resolved_version e cache_hit
 - [schema meta](docs/schemas/schema.schema.json): payload do documento schema embutido
 - [schema completions](docs/schemas/completions.schema.json): shell + script no modo JSON
-- [schema error](docs/schemas/error.schema.json): command, duration_ms, kind budget, flag retryable
+- [schema error](docs/schemas/error.schema.json): command, duration_ms, kind budget, flag retryable, array suggestions estruturado
 - [schema dry-run](docs/schemas/dry-run.schema.json): planned_url, validation, planned_params.crate_name

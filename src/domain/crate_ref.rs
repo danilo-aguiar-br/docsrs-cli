@@ -1,6 +1,6 @@
 //! Crate reference with optional `name@version` sugar.
 
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 use super::{CrateName, VersionArg};
 
@@ -22,7 +22,7 @@ impl CrateRef {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for empty parts, illegal names, or
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for empty parts, illegal names, or
     /// invalid version tokens (including a forbidden `v` SemVer prefix).
     ///
     /// # Examples
@@ -41,29 +41,19 @@ impl CrateRef {
     pub fn parse(raw: &str) -> AppResult<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "crate name is empty",
-            ));
+            return Err(AppError::of(ErrorDetail::Empty {
+                subject: Subject::CrateName,
+            }));
         }
         if let Some((name_part, ver_part)) = raw.split_once('@') {
             if name_part.is_empty() {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    "crate name is empty before '@'",
-                ));
+                return Err(AppError::of(ErrorDetail::CrateRefEmptyName));
             }
             if ver_part.is_empty() {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    "version is empty after '@'",
-                ));
+                return Err(AppError::of(ErrorDetail::CrateRefEmptyVersion));
             }
             if ver_part.contains('@') {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    "crate reference must contain at most one '@'",
-                ));
+                return Err(AppError::of(ErrorDetail::CrateRefMultipleAt));
             }
             let name = CrateName::parse(name_part)?;
             let version = VersionArg::parse(ver_part)?;
@@ -86,26 +76,20 @@ impl CrateRef {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] on conflicting versions or invalid flag.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] on conflicting versions or invalid flag.
     pub fn into_name_and_version(
         self,
         crate_version_flag: Option<&str>,
     ) -> AppResult<(CrateName, VersionArg)> {
-        let flag = crate_version_flag
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        let flag = crate_version_flag.map(str::trim).filter(|s| !s.is_empty());
         match (self.version, flag) {
             (Some(from_at), Some(flag_raw)) => {
                 let from_flag = VersionArg::parse(flag_raw)?;
                 if from_at.as_str() != from_flag.as_str() {
-                    return Err(AppError::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "conflicting versions: crate@{} vs --crate-version {}",
-                            from_at.as_str(),
-                            from_flag.as_str()
-                        ),
-                    ));
+                    return Err(AppError::of(ErrorDetail::ConflictingVersions {
+                        from_ref: from_at.as_str().to_string(),
+                        from_flag: from_flag.as_str().to_string(),
+                    }));
                 }
                 Ok((self.name, from_at))
             }

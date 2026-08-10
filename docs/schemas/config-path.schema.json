@@ -97,6 +97,10 @@
         "retry_max_delay_ms": {
           "type": "integer"
         },
+        "retry_max_elapsed_ms": {
+          "type": "integer",
+          "description": "Total HTTP retry wall budget in milliseconds. Value 0 means derive from the effective timeout."
+        },
         "disable_retry": {
           "type": "boolean"
         },
@@ -167,16 +171,21 @@
         },
         "config_toml_loaded": {
           "type": "boolean"
+        },
+        "log_directive": {
+          "type": "string",
+          "description": "Default tracing filter directive when -q / -v are absent. The only way to steer stderr diagnostics beyond the CLI flags: no product environment variable (including RUST_LOG) is read. A value the subscriber cannot parse is rejected when config.toml loads (exit 78), so any value reported here is one that took effect. Omitted when unset."
         }
       }
     },
     {
       "title": "config-init",
+      "description": "config init is destructive under --force: it replaces config.toml in place. Explicit Target Designation applies, so --force requires either --config-dir naming the directory in argv or --yes accepting the XDG one; with neither it exits 64 with kind=usage and writes nothing. Without --force nothing is destroyed and no waiver is asked for.",
       "type": "object",
       "required": [
         "path",
         "config_dir",
-        "source",
+        "target_source",
         "created",
         "overwritten"
       ],
@@ -188,8 +197,9 @@
         "config_dir": {
           "type": "string"
         },
-        "source": {
+        "target_source": {
           "type": "string",
+          "description": "Which layer resolved the directory this call wrote into. Same name and same values as cache-clear, the other destructive verb, so one audit reads both.",
           "enum": [
             "cli", "xdg", "unresolved"
           ]

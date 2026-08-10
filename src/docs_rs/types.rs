@@ -53,8 +53,25 @@ pub struct GetItemData {
     /// True when the HTTP body was served from the local disk cache.
     pub cache_hit: bool,
     /// How markdown was scoped for associated methods. Success path is `method` only (1.2.0+ fail-closed; missing anchors are errors).
+    ///
+    /// Read this as "the markdown came from the member anchor", never as "the
+    /// member is a function". It reports `method` for every anchor family,
+    /// including `variant.` and `structfield.`, which is why
+    /// [`Self::anchor_family`] exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extraction: Option<String>,
+    /// Rustdoc anchor family the markdown was actually scoped to.
+    ///
+    /// One of `method`, `tymethod`, `associatedtype`, `associatedconstant`,
+    /// `variant` or `structfield`, derived from the anchor id that matched on
+    /// the page rather than from the requested kind.
+    ///
+    /// Added instead of correcting [`Self::extraction`] because agents already
+    /// assert `extraction == "method"` to reject a parent-page false success
+    /// (see `src/docs_rs/html/extract.rs`); changing that value would break them
+    /// silently, while an absent field is a shape every reader already handles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_family: Option<String>,
     /// Canonical rustdoc path when a reexport/root path was resolved via all.html.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_item_path: Option<String>,
@@ -89,9 +106,15 @@ pub struct SearchInCrateData {
     pub item_type: Option<String>,
     /// Match mode applied (`exact` | `prefix` | `substring`).
     pub match_mode: String,
-    /// Total classified hits before the limit.
+    /// Hits the upstream index classified, before `--limit`.
+    ///
+    /// Describes docs.rs, not this envelope, so agent-native reduction leaves it
+    /// alone: it is the only count that survives a filter intact.
     pub total: usize,
-    /// Number of hits actually emitted.
+    /// Length of the emitted `hits` array.
+    ///
+    /// Listed in [`crate::agent_ops::EMITTED_COUNT_KEYS`], so reduction rewrites it
+    /// whenever it shrinks the array. A field that names the array has to follow it.
     pub emitted: usize,
     /// Emitted hits.
     pub hits: Vec<SearchInCrateHit>,
@@ -102,4 +125,3 @@ pub struct SearchInCrateData {
     /// True when the HTTP body was served from the local disk cache.
     pub cache_hit: bool,
 }
-

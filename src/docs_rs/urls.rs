@@ -6,9 +6,10 @@
 use url::Url;
 
 use crate::domain::{AllowedOrigin, CrateName, VersionArg};
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, InternalOp};
 use crate::item_kind::{ItemKind, rustc_crate_name};
 
+use super::assoc::{AssocAnchorKind, associated_item_path, member_only_family};
 use super::hits::{leaf_eq_ignore_ascii, unique_best_score_hit};
 use super::types::SearchInCrateHit;
 
@@ -24,7 +25,7 @@ fn default_docs_origin(crate_name: &CrateName) -> AllowedOrigin {
 ///
 /// # Errors
 ///
-/// Propagates [`ErrorKind::Internal`] from [`readme_url_on_origin`] when the URL is invalid.
+/// Propagates [`crate::error::ErrorKind::Internal`] from [`readme_url_on_origin`] when the URL is invalid.
 pub fn readme_url(crate_name: &CrateName, version: &VersionArg) -> AppResult<Url> {
     readme_url_on_origin(&default_docs_origin(crate_name), crate_name, version)
 }
@@ -33,7 +34,7 @@ pub fn readme_url(crate_name: &CrateName, version: &VersionArg) -> AppResult<Url
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Internal`] when `origin` / path segments do not form a valid URL.
+/// Returns [`crate::error::ErrorKind::Internal`] when `origin` / path segments do not form a valid URL.
 pub fn readme_url_on_origin(
     origin: &AllowedOrigin,
     crate_name: &CrateName,
@@ -48,14 +49,21 @@ pub fn readme_url_on_origin(
         let rustc = rustc_crate_name(crate_name.as_str());
         format!("{origin}/{crate_name}/{version}/{rustc}/index.html")
     };
-    Url::parse(&s).map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid readme URL", e))
+    Url::parse(&s).map_err(|e| {
+        AppError::of_with_source(
+            ErrorDetail::Internal {
+                op: InternalOp::UrlBuild,
+            },
+            e,
+        )
+    })
 }
 
 /// Build rustdoc item or module URL.
 ///
 /// # Errors
 ///
-/// Propagates [`ErrorKind::InvalidInput`] or [`ErrorKind::Internal`] from
+/// Propagates [`crate::error::ErrorKind::InvalidInput`] or [`crate::error::ErrorKind::Internal`] from
 /// [`get_item_url_on_origin`].
 pub fn get_item_url(
     crate_name: &CrateName,
@@ -77,24 +85,11 @@ pub fn get_item_url(
 ///
 /// `segs` must already have the crate-root prefix stripped (see
 /// [`strip_crate_prefix_segments`]).
+///
+/// Narrow view of [`associated_item_path`], kept because callers that only care
+/// about functions read better without matching on the family enum.
 pub fn is_method_path(kind: ItemKind, segs: &[String]) -> bool {
-    if segs.len() < 2 {
-        return false;
-    }
-    if kind != ItemKind::Fn {
-        return false;
-    }
-    let parent = segs[segs.len() - 2].as_str();
-    let method = segs[segs.len() - 1].as_str();
-    let parent_type = parent
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase());
-    let method_fn = method
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c == '_');
-    parent_type && method_fn
+    associated_item_path(kind, segs) == Some(AssocAnchorKind::Method)
 }
 
 /// Strip leading crate name / rustc root from item path segments (same rules as URL builder).
@@ -115,9 +110,6 @@ pub fn strip_crate_prefix_segments(
     s
 }
 
-/// Parent type kinds accepted when resolving a short method path via all.html.
-pub const METHOD_PARENT_KIND_NAMES: &[&str] = &["struct", "enum", "trait", "type", "union"];
-
 /// Pick a unique parent type path for `Type::method` short forms (e.g. `Runtime` → `runtime::Runtime`).
 ///
 /// Exact leaf match among struct/enum/trait/type/union only. When several exact
@@ -130,7 +122,12 @@ pub fn pick_unique_type_path(leaf: &str, hits: &[SearchInCrateHit]) -> Option<St
     let exact: Vec<&SearchInCrateHit> = hits
         .iter()
         .filter(|h| {
-            METHOD_PARENT_KIND_NAMES.contains(&h.kind.as_str())
+            // Same list the live fetch probes, read from the family instead of a
+            // local copy: a parent kind reachable there must be reachable here.
+            AssocAnchorKind::Method
+                .parent_kind_probe()
+                .iter()
+                .any(|k| k.as_str() == h.kind.as_str())
                 && leaf_eq_ignore_ascii(&h.name, &needle)
         })
         .collect();
@@ -141,7 +138,11 @@ pub fn pick_unique_type_path(leaf: &str, hits: &[SearchInCrateHit]) -> Option<St
         return None;
     }
     // Prefer struct when multiple kinds share the same leaf (rare).
-    let structs: Vec<_> = exact.iter().filter(|h| h.kind == "struct").copied().collect();
+    let structs: Vec<_> = exact
+        .iter()
+        .filter(|h| h.kind == "struct")
+        .copied()
+        .collect();
     if structs.len() == 1 {
         return Some(structs[0].name.clone());
     }
@@ -159,24 +160,16 @@ pub fn method_segments_from_parent(parent_path: &str, method_leaf: &str) -> Vec<
     segs
 }
 
-/// Parent type kinds tried when resolving a method URL (struct first — common case).
-pub(super) const METHOD_PARENT_KINDS: &[ItemKind] = &[
-    ItemKind::Struct,
-    ItemKind::Enum,
-    ItemKind::Trait,
-    ItemKind::Type,
-    ItemKind::Union,
-];
-
 /// Build get-item URL against a custom origin (wiremock tests).
 ///
-/// Associated methods (`Runtime::new`) resolve to the parent type page plus
-/// `#method.{name}` (rustdoc layout). Free functions keep `{kind}.{name}.html`.
+/// Associated items (`Runtime::new`, `Iterator::Item`, `Duration::MAX`) resolve
+/// to the parent page plus the family's anchor fragment (rustdoc layout). Free
+/// items keep `{kind}.{name}.html`.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::InvalidInput`] when a non-module path lacks an item name.
-/// Returns [`ErrorKind::Internal`] when the assembled path is not a valid URL.
+/// Returns [`crate::error::ErrorKind::InvalidInput`] when a non-module path lacks an item name.
+/// Returns [`crate::error::ErrorKind::Internal`] when the assembled path is not a valid URL.
 pub fn get_item_url_on_origin(
     origin: &AllowedOrigin,
     crate_name: &CrateName,
@@ -188,6 +181,9 @@ pub fn get_item_url_on_origin(
 }
 
 /// Like [`get_item_url_on_origin`] but forces the parent type kind for methods.
+///
+/// # Errors
+/// Same as [`get_item_url_on_origin`].
 pub fn get_item_url_on_origin_with_parent_kind(
     origin: &AllowedOrigin,
     crate_name: &CrateName,
@@ -198,31 +194,33 @@ pub fn get_item_url_on_origin_with_parent_kind(
 ) -> AppResult<Url> {
     let origin = origin.as_str().trim_end_matches('/');
     let rustc_root = rustc_crate_name(crate_name.as_str());
-    let segs: Vec<String> = {
-        let mut s = segments.to_vec();
-        if let Some(first) = s.first() {
-            let f = first.as_str();
-            let is_crate_prefix = f == crate_name.as_str() || f == rustc_root.as_str();
-            if is_crate_prefix && (s.len() >= 2 || kind == ItemKind::Module) {
-                s.remove(0);
-            }
-        }
-        s
-    };
+    let segs = strip_crate_prefix_segments(crate_name, kind, segments);
 
-    // Associated method: Type::method → parent page + #method.name
-    if is_method_path(kind, &segs) {
-        // is_method_path requires ≥2 segments; fail closed if invariant breaks.
-        let (parent_name, method_name) = match segs.as_slice() {
-            [.., parent, method] => (parent.clone(), method.clone()),
+    // Associated item: Parent::member → parent page + #{prefix}{member}
+    if let Some(assoc) = associated_item_path(kind, &segs) {
+        // associated_item_path requires ≥2 segments; fail closed if that breaks.
+        let (parent_name, member_name) = match segs.as_slice() {
+            [.., parent, member] => (parent.clone(), member.clone()),
             _ => {
-                return Err(AppError::new(
-                    ErrorKind::Internal,
-                    "method path invariant broken: expected at least 2 segments",
-                ));
+                return Err(AppError::of(ErrorDetail::Internal {
+                    op: InternalOp::AssocPathTooShort,
+                }));
             }
         };
-        let parent_kind = parent_kind_override.unwrap_or(ItemKind::Struct);
+        // Only one fragment fits in a URL. The extractor still probes every
+        // prefix of the family against the page it fetches, so a required trait
+        // method planned as `#method.X` still resolves through `#tymethod.X`.
+        let anchor = format!("{}{member_name}", assoc.primary_prefix());
+        // Probe order leads with the kind that hosts this family most often:
+        // traits for associated types, structs for methods and constants.
+        let parent_kind = parent_kind_override.unwrap_or(assoc.parent_kind_probe()[0]);
+        // Every kind in a `parent_kind_probe` list owns a page by construction;
+        // a `None` here would mean the probe tables named a member as a host.
+        let parent_prefix = parent_kind.file_prefix().ok_or_else(|| {
+            AppError::of(ErrorDetail::Internal {
+                op: InternalOp::AssocParentOwnsNoPage,
+            })
+        })?;
         let mod_parts: Vec<String> = if segs.len() == 2 {
             if crate_name.is_stdlib() {
                 Vec::new()
@@ -244,36 +242,55 @@ pub fn get_item_url_on_origin_with_parent_kind(
             let channel = version.stdlib_channel();
             if mod_parts.is_empty() {
                 format!(
-                    "{origin}/{channel}/{crate_name}/{}.{}.html#method.{method_name}",
-                    parent_kind.file_prefix(),
-                    parent_name
+                    "{origin}/{channel}/{crate_name}/{parent_prefix}.{parent_name}.html#{anchor}"
                 )
             } else {
                 format!(
-                    "{origin}/{channel}/{crate_name}/{}/{}.{}.html#method.{method_name}",
+                    "{origin}/{channel}/{crate_name}/{}/{}.{}.html#{anchor}",
                     mod_parts.join("/"),
-                    parent_kind.file_prefix(),
+                    parent_prefix,
                     parent_name
                 )
             }
         } else if mod_parts.is_empty() {
             format!(
-                "{origin}/{crate_name}/{version}/{}/{}.{}.html#method.{method_name}",
-                rustc_root,
-                parent_kind.file_prefix(),
-                parent_name
+                "{origin}/{crate_name}/{version}/{rustc_root}/{parent_prefix}.{parent_name}.html#{anchor}"
             )
         } else {
             format!(
-                "{origin}/{crate_name}/{version}/{}/{}.{}.html#method.{method_name}",
+                "{origin}/{crate_name}/{version}/{}/{}.{}.html#{anchor}",
                 mod_parts.join("/"),
-                parent_kind.file_prefix(),
+                parent_prefix,
                 parent_name
             )
         };
-        return Url::parse(&url_str)
-            .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid get-item URL", e));
+        return Url::parse(&url_str).map_err(|e| {
+            AppError::of_with_source(
+                ErrorDetail::Internal {
+                    op: InternalOp::UrlBuild,
+                },
+                e,
+            )
+        });
     }
+
+    // Fail closed before the free-item branch. An enum variant and a struct
+    // field exist only as anchors on their parent, so reaching here means the
+    // path had no `Parent::member` shape. Building `variant.Some.html` would be
+    // an HTTP 404 dressed up as a plan; naming the missing parent is actionable.
+    if let Some(family) = member_only_family(kind) {
+        return Err(AppError::of(ErrorDetail::MemberKindNeedsParent {
+            kind: kind.as_str(),
+            member: segs.last().map_or("member", String::as_str).to_string(),
+            parent_kinds: family
+                .parent_kind_probe_names()
+                .collect::<Vec<_>>()
+                .join(", "),
+        }));
+    }
+
+    // Safe after the guard above: every remaining kind owns a page.
+    let file_prefix = kind.file_prefix().unwrap_or(kind.as_str());
 
     let url_str = if crate_name.is_stdlib() {
         let channel = version.stdlib_channel();
@@ -292,29 +309,22 @@ pub fn get_item_url_on_origin_with_parent_kind(
             }
         } else {
             if segs.is_empty() {
-                return Err(AppError::new(
-                    ErrorKind::InvalidInput,
-                    "item path missing item name",
-                ));
+                return Err(AppError::of(ErrorDetail::ItemPathMissingItemName));
             }
-            let item_name = segs.last().ok_or_else(|| {
-                AppError::new(ErrorKind::InvalidInput, "item path missing item name")
-            })?;
+            let item_name = segs
+                .last()
+                .ok_or_else(|| AppError::of(ErrorDetail::ItemPathMissingItemName))?;
             let mod_parts: Vec<String> = segs[..segs.len().saturating_sub(1)]
                 .iter()
                 .map(|p| rustc_crate_name(p))
                 .collect();
             if mod_parts.is_empty() {
-                format!(
-                    "{origin}/{channel}/{crate_name}/{}.{}.html",
-                    kind.file_prefix(),
-                    item_name
-                )
+                format!("{origin}/{channel}/{crate_name}/{file_prefix}.{item_name}.html")
             } else {
                 format!(
                     "{origin}/{channel}/{crate_name}/{}/{}.{}.html",
                     mod_parts.join("/"),
-                    kind.file_prefix(),
+                    file_prefix,
                     item_name
                 )
             }
@@ -330,14 +340,11 @@ pub fn get_item_url_on_origin_with_parent_kind(
         )
     } else {
         if segs.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "item path missing item name",
-            ));
+            return Err(AppError::of(ErrorDetail::ItemPathMissingItemName));
         }
         let item_name = segs
             .last()
-            .ok_or_else(|| AppError::new(ErrorKind::InvalidInput, "item path missing item name"))?;
+            .ok_or_else(|| AppError::of(ErrorDetail::ItemPathMissingItemName))?;
         let mod_parts: Vec<String> = if segs.len() == 1 {
             vec![rustc_root]
         } else {
@@ -350,20 +357,26 @@ pub fn get_item_url_on_origin_with_parent_kind(
         format!(
             "{origin}/{crate_name}/{version}/{}/{}.{}.html",
             mod_parts.join("/"),
-            kind.file_prefix(),
+            file_prefix,
             item_name
         )
     };
 
-    Url::parse(&url_str)
-        .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid get-item URL", e))
+    Url::parse(&url_str).map_err(|e| {
+        AppError::of_with_source(
+            ErrorDetail::Internal {
+                op: InternalOp::UrlBuild,
+            },
+            e,
+        )
+    })
 }
 
 /// Build all.html index URL.
 ///
 /// # Errors
 ///
-/// Propagates [`ErrorKind::Internal`] from [`all_html_url_on_origin`].
+/// Propagates [`crate::error::ErrorKind::Internal`] from [`all_html_url_on_origin`].
 pub fn all_html_url(crate_name: &CrateName, version: &VersionArg) -> AppResult<Url> {
     all_html_url_on_origin(&default_docs_origin(crate_name), crate_name, version)
 }
@@ -372,7 +385,7 @@ pub fn all_html_url(crate_name: &CrateName, version: &VersionArg) -> AppResult<U
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Internal`] when `origin` / path segments do not form a valid URL.
+/// Returns [`crate::error::ErrorKind::Internal`] when `origin` / path segments do not form a valid URL.
 pub fn all_html_url_on_origin(
     origin: &AllowedOrigin,
     crate_name: &CrateName,
@@ -386,6 +399,12 @@ pub fn all_html_url_on_origin(
         let rustc = rustc_crate_name(crate_name.as_str());
         format!("{origin}/{crate_name}/{version}/{rustc}/all.html")
     };
-    Url::parse(&s)
-        .map_err(|e| AppError::with_source(ErrorKind::Internal, "invalid all.html URL", e))
+    Url::parse(&s).map_err(|e| {
+        AppError::of_with_source(
+            ErrorDetail::Internal {
+                op: InternalOp::UrlBuild,
+            },
+            e,
+        )
+    })
 }

@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::config::MAX_QUERY_CHARS;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 use super::regex::is_hostile_text_char;
 
@@ -19,31 +19,29 @@ impl SearchQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] when the query is empty without
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] when the query is empty without
     /// `allow_empty`, or when it exceeds the maximum length.
     pub fn parse(query: &str, allow_empty: bool) -> AppResult<Self> {
         let q = query.trim();
         if !allow_empty && q.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "search query is empty",
-            ));
+            return Err(AppError::of(ErrorDetail::Empty {
+                subject: Subject::SearchQuery,
+            }));
         }
         if q.chars().count() > MAX_QUERY_CHARS {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("query exceeds {MAX_QUERY_CHARS} characters"),
-            ));
+            return Err(AppError::of(ErrorDetail::TooLong {
+                subject: Subject::SearchQuery,
+                limit: MAX_QUERY_CHARS,
+            }));
         }
         // Hostile argv: reject C0/C1 controls and invisible/bidi format chars.
         // Crates.io query is free text but never needs ZWSP, BOM, or bidi overrides.
         // ASCII domain types (crate/item/version) do not need NFC; free-text search
         // is not an identity key — we fail closed on format chars instead of silent strip.
         if q.chars().any(is_hostile_text_char) {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "search query contains control or invisible characters",
-            ));
+            return Err(AppError::of(ErrorDetail::ControlCharacters {
+                subject: Subject::SearchQuery,
+            }));
         }
         Ok(Self(q.to_string()))
     }

@@ -1,4 +1,4 @@
-//! Shared process-spawn helpers for integration tests.
+//! Shared helpers for integration tests: process spawning and offline HTTP config.
 //!
 //! # Scope (Rules Rust — processos externos)
 //!
@@ -25,6 +25,9 @@
 
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use docsrs_cli::config::Config;
+use docsrs_cli::domain::AllowedOrigin;
 
 /// Absolute path to the product binary under test.
 pub fn docsrs_cli_bin() -> &'static str {
@@ -84,5 +87,30 @@ pub fn wait_with_timeout(child: &mut Child, max: Duration) -> std::io::Result<Ex
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Offline HTTP integration helpers (wiremock-backed suites).
+// ---------------------------------------------------------------------------
+
+/// Parse a wiremock `server.uri()` into an allowlisted origin (requires `allow_loopback`).
+pub fn origin_of(uri: &str) -> AllowedOrigin {
+    AllowedOrigin::parse_with(uri, true).expect("wiremock origin must pass allowlist")
+}
+
+/// Fast, loopback-friendly [`Config`] for wiremock-backed suites.
+pub fn test_cfg(base: &str) -> Config {
+    let _ = base;
+    Config {
+        rate_limit_delay_ms: 0,
+        max_retries: 2,
+        retry_base_ms: 50, // MIN_RETRY_BASE_MS floor
+        retry_max_elapsed_ms: 10_000,
+        timeout_secs: 5,
+        connect_timeout_secs: 2,
+        user_agent: "docsrs-cli/0.1.0 (test@example.com)".into(),
+        allow_loopback: true,
+        ..Config::default()
     }
 }

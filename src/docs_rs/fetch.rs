@@ -3,21 +3,22 @@
 use url::Url;
 
 use crate::domain::{AllowedOrigin, CrateName, VersionArg};
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, ErrorKind};
 use crate::http::{HttpClient, decode_utf8, require_content_type_html};
-use crate::item_kind::{ItemKind, rustc_crate_name};
+use crate::item_kind::ItemKind;
 
 use scraper::Html;
 
+use super::assoc::{ASSOC_ANCHOR_MISS_PREFIX, assoc_from_fragment, associated_item_path};
 use super::html::{
-    extract_item_markdown_from_document, extract_method_markdown_scoped_from_document,
+    extract_assoc_markdown_scoped_from_document, extract_item_markdown_from_document,
     extract_readme_markdown_from_document, extract_resolved_version_for_crate,
     scrape_docs_rs_version_from_document,
 };
 use super::types::{GetItemData, ReadmeData};
 use super::urls::{
-    METHOD_PARENT_KINDS, get_item_url_on_origin, get_item_url_on_origin_with_parent_kind,
-    is_method_path, readme_url_on_origin,
+    get_item_url_on_origin, get_item_url_on_origin_with_parent_kind, readme_url_on_origin,
+    strip_crate_prefix_segments,
 };
 
 /// Fetch and convert crate overview docblock (production docs.rs).
@@ -38,7 +39,7 @@ pub async fn fetch_readme(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Internal`] when the origin URL is invalid.
+/// Returns [`crate::error::ErrorKind::Internal`] when the origin URL is invalid.
 /// Propagates fetch failures from [`fetch_readme_at`].
 pub async fn fetch_readme_on_origin(
     http: &HttpClient,
@@ -56,7 +57,7 @@ pub async fn fetch_readme_on_origin(
 ///
 /// Propagates HTTP errors from [`HttpClient::get_html`].
 /// Maps non-success statuses via [`AppError::from_http_status`].
-/// Returns [`ErrorKind::Parse`] on non-UTF-8 bodies or HTML→Markdown failure.
+/// Returns [`crate::error::ErrorKind::Parse`] on non-UTF-8 bodies or HTML→Markdown failure.
 pub async fn fetch_readme_at(
     http: &HttpClient,
     crate_name: &CrateName,
@@ -164,6 +165,9 @@ pub async fn fetch_item_on_origin(
 }
 
 /// Like [`fetch_item_on_origin`] with a wire `item_type` echo (`method` vs `fn`).
+///
+/// # Errors
+/// Same as [`fetch_item_on_origin`].
 pub async fn fetch_item_on_origin_with_echo(
     http: &HttpClient,
     origin: &AllowedOrigin,
@@ -173,25 +177,36 @@ pub async fn fetch_item_on_origin_with_echo(
     item_type_echo: &str,
     segments: &[String],
 ) -> AppResult<GetItemData> {
-    // Strip crate prefix the same way URL builder does for method detection.
-    let rustc_root = rustc_crate_name(crate_name.as_str());
-    let segs_for_detect: Vec<String> = {
-        let mut s = segments.to_vec();
-        if let Some(first) = s.first() {
-            let f = first.as_str();
-            let is_crate_prefix = f == crate_name.as_str() || f == rustc_root.as_str();
-            if is_crate_prefix && (s.len() >= 2 || kind == ItemKind::Module) {
-                s.remove(0);
-            }
-        }
-        s
-    };
+    // Shared with the URL builder on purpose. This block used to be a hand copy
+    // carrying the comment "the same way URL builder does" — a promise the
+    // compiler could not keep. Detection and URL construction reading different
+    // rules is the exact shape of GAP-ASSOCITEM-001.
+    let segs_for_detect = strip_crate_prefix_segments(crate_name, kind, segments);
 
-    if is_method_path(kind, &segs_for_detect) {
+    if let Some(assoc) = associated_item_path(kind, &segs_for_detect) {
         // Keep the *first* parent-page NotFound for diagnostics (X-010): dry-run
-        // plans `struct.*` first; reporting the last probe (`union.*`) misleads agents.
+        // plans the family's leading kind first; reporting the last probe
+        // (`union.*`) misleads agents.
+        //
+        // Sequential on purpose, reconfirmed by measurement in 2026-08 after the
+        // decision was reopened (GAP-PROBE-001).
+        //
+        // The original rejection cited a 12.6x regression without naming the
+        // mechanism, which is why it kept getting reopened. The mechanism is the
+        // politeness delay: `rate_limit_delay_ms` defaults to 1000 and is keyed
+        // by host, while every kind in `parent_kind_probe` — up to five — resolves
+        // against that same host. Measured on this host: `Duration::MAX`, which
+        // hits on its first probe, completes in 104 ms; `Iterator::Item`, which
+        // needs a second request, takes 1083 ms. The extra second is the throttle,
+        // not the network.
+        //
+        // So the floor for N sequential probes is (N-1) x delay whether they are
+        // issued serially or concurrently: a fan-out would queue behind the same
+        // limiter and add coordination on top. Concurrency can only pay off once
+        // the probes stop sharing a rate-limited host, which is not a property of
+        // rustdoc URLs.
         let mut first_err: Option<AppError> = None;
-        for parent_kind in METHOD_PARENT_KINDS {
+        for parent_kind in assoc.parent_kind_probe() {
             let url = get_item_url_on_origin_with_parent_kind(
                 origin,
                 crate_name,
@@ -212,10 +227,10 @@ pub async fn fetch_item_on_origin_with_echo(
             .await
             {
                 Ok(data) => return Ok(data),
-                // Parent page found but method anchor missing → stop probing kinds.
+                // Parent page found but member anchor missing → stop probing kinds.
                 Err(e)
                     if e.kind() == ErrorKind::NotFound
-                        && e.message().starts_with("method anchor ") =>
+                        && e.message().starts_with(ASSOC_ANCHOR_MISS_PREFIX) =>
                 {
                     return Err(e);
                 }
@@ -228,9 +243,7 @@ pub async fn fetch_item_on_origin_with_echo(
                 Err(e) => return Err(e),
             }
         }
-        return Err(first_err.unwrap_or_else(|| {
-            AppError::new(ErrorKind::NotFound, "method parent type page not found")
-        }));
+        return Err(first_err.unwrap_or_else(|| AppError::of(ErrorDetail::AssocParentPageNotFound)));
     }
 
     let url = get_item_url_on_origin(origin, crate_name, version, kind, segments)?;
@@ -252,7 +265,7 @@ pub async fn fetch_item_on_origin_with_echo(
 ///
 /// Propagates HTTP errors from [`HttpClient::get_html`].
 /// Maps non-success statuses via [`AppError::from_http_status`].
-/// Returns [`ErrorKind::Parse`] on non-UTF-8 bodies or HTML→Markdown failure.
+/// Returns [`crate::error::ErrorKind::Parse`] on non-UTF-8 bodies or HTML→Markdown failure.
 pub async fn fetch_item_at(
     http: &HttpClient,
     crate_name: &CrateName,
@@ -274,6 +287,9 @@ pub async fn fetch_item_at(
 }
 
 /// Like [`fetch_item_at`] but echoes a requested kind string (e.g. `method` vs `fn`).
+///
+/// # Errors
+/// Same as [`fetch_item_at`].
 pub async fn fetch_item_at_with_echo(
     http: &HttpClient,
     crate_name: &CrateName,
@@ -304,27 +320,36 @@ pub async fn fetch_item_at_with_echo(
     }
     require_content_type_html(resp.content_type.as_deref())?;
 
-    let method_anchor = fragment
+    // A fragment names its own anchor family without ambiguity, so the family is
+    // read back off the URL already in hand instead of threading an extra
+    // parameter through every layer. The extractor still decides which prefix of
+    // that family the page actually carries (`method.` vs `tymethod.`).
+    let assoc_anchor = fragment
         .as_deref()
-        .and_then(|f| f.strip_prefix("method."))
-        .map(str::to_string);
+        .and_then(assoc_from_fragment)
+        .map(|(family, name)| (family, name.to_string()));
     // Move body once: one DOM for markdown + version scrape (SCRAPE-S-003).
     let body = resp.body;
-    let method_anchor_cpu = method_anchor.clone();
+    let assoc_anchor_cpu = assoc_anchor;
     let crate_for_scrape = crate_name.as_str().to_string();
-    let ((markdown, empty), extraction, scraped_ver) = http
+    let ((markdown, empty), extraction, matched_anchor, scraped_ver) = http
         .budget()
         .run_cpu_bound(move || {
             let text = decode_utf8(&body)?;
             let doc = Html::parse_document(&text);
             let scraped = scrape_docs_rs_version_from_document(&doc, &crate_for_scrape);
-            if let Some(ref m) = method_anchor_cpu {
-                let (md, empty, scope) =
-                    extract_method_markdown_scoped_from_document(&doc, m)?;
-                Ok(((md, empty), Some(scope.to_string()), scraped))
+            if let Some((family, ref m)) = assoc_anchor_cpu {
+                let found =
+                    extract_assoc_markdown_scoped_from_document(&doc, family.anchor_prefixes(), m)?;
+                Ok((
+                    (found.markdown, found.empty),
+                    Some(found.scope.to_string()),
+                    Some(found.anchor_id),
+                    scraped,
+                ))
             } else {
                 let (md, empty) = extract_item_markdown_from_document(&doc)?;
-                Ok(((md, empty), None, scraped))
+                Ok(((md, empty), None, None, scraped))
             }
         })
         .await?;
@@ -341,8 +366,21 @@ pub async fn fetch_item_at_with_echo(
     )
     .or(scraped_ver);
 
+    // The anchor id carries the family in its prefix (`variant.Some`), so the
+    // real family is already in hand here and never has to be re-derived from
+    // the requested kind. Split before the id is moved into the fragment below.
+    let anchor_family = matched_anchor
+        .as_deref()
+        .and_then(|a| a.split_once('.'))
+        .map(|(family, _)| family.to_string());
+
     let mut source_url = resp.final_url.clone();
-    if let Some(f) = fragment {
+    // Echo the anchor that exists on the page, not the one the URL builder
+    // guessed: a required trait method lives at `#tymethod.X`, and pointing an
+    // agent at `#method.X` would send it to a fragment the page never defines.
+    if let Some(anchor) = matched_anchor {
+        source_url.set_fragment(Some(&anchor));
+    } else if let Some(f) = fragment {
         source_url.set_fragment(Some(&f));
     }
 
@@ -360,6 +398,7 @@ pub async fn fetch_item_at_with_echo(
         title,
         cache_hit: resp.cache_hit,
         extraction,
+        anchor_family,
         resolved_item_path: None,
     })
 }

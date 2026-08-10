@@ -59,7 +59,12 @@
     "extraction": {
       "type": "string",
       "enum": ["method", "item_page"],
-      "description": "Present for associated-method success: always method when the anchor was found (1.2.0+ fail-closed). item_page is legacy and MUST NOT appear on success — missing anchors return not_found exit 66. Omitted for non-method items."
+      "description": "Present for associated-member success: always method when the anchor was found (1.2.0+ fail-closed). Read it as 'the markdown came from the member anchor', NOT as 'the member is a function' — it reports method for variant. and structfield. anchors too. Use anchor_family for the real family. item_page is legacy and MUST NOT appear on success — missing anchors return not_found exit 66. Omitted for non-member items."
+    },
+    "anchor_family": {
+      "type": "string",
+      "enum": ["method", "tymethod", "associatedtype", "associatedconstant", "variant", "structfield"],
+      "description": "Rustdoc anchor family the markdown was scoped to, derived from the anchor id that matched on the page. Added in 2.0.0 alongside the unchanged extraction field, because agents already assert extraction == \"method\" to reject a parent-page false success. Omitted for non-member items (never JSON null)."
     },
     "resolved_item_path": {
       "type": "string",

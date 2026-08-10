@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "docsrs-cli agent_surface reduction report",
+  "description": "Object attached at envelope top level (sibling of data, never inside it) when any agent-native reduction knob is active: --select/--fields, --filter, --sort-by, --dedupe-by, --max-items, --count-only or --truncate-content. --max-output-bytes alone does not attach it. An envelope with ok=false is passed through untouched and never carries this object. Application order is fixed: filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes.",
+  "type": "object",
+  "required": [
+    "input_count",
+    "output_count",
+    "limited",
+    "content_truncated",
+    "output_truncated"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "input_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Elements in the located result array before reduction. Reports 1 when the payload carries no array and projection applied to the data object itself."
+    },
+    "output_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Elements emitted after the whole pipeline, including any drop forced by --max-output-bytes. This is the authoritative post-reduction count."
+    },
+    "limited": {
+      "type": "boolean",
+      "description": "True when --max-items discarded at least one element. Distinguishes a genuinely small result from a truncated one: without it a caller cannot tell whether raising the cap would return more."
+    },
+    "content_truncated": {
+      "type": "boolean",
+      "description": "True when --truncate-content shortened at least one string. Truncation counts characters, never bytes, so a multi-byte sequence is never split."
+    },
+    "output_truncated": {
+      "type": "boolean",
+      "description": "True when --max-output-bytes dropped trailing elements to fit the budget. Whole elements are removed; the JSON text is never sliced, because an unparseable document is worse than an over-budget one."
+    }
+  }
+}

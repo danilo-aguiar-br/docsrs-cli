@@ -36,7 +36,8 @@
       "required": [
         "root",
         "removed_entries",
-        "freed_bytes"
+        "freed_bytes",
+        "target_source"
       ],
       "additionalProperties": false,
       "properties": {
@@ -50,6 +51,15 @@
         "freed_bytes": {
           "type": "integer",
           "minimum": 0
+        },
+        "target_source": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "xdg",
+            "unresolved"
+          ],
+          "description": "Which layer designated the deleted root. `cli` means --cache-dir named it in argv; `xdg` means the caller waived designation with --yes and accepted the ambient root."
         }
       }
     },

@@ -7,14 +7,19 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, InternalOp};
 
 /// Map stdout I/O failures to domain errors (broken pipe → exit 141).
 pub(crate) fn map_stdout_err(e: io::Error) -> AppError {
     if e.kind() == io::ErrorKind::BrokenPipe {
         AppError::broken_pipe()
     } else {
-        AppError::with_source(ErrorKind::Internal, "stdout write failed", e)
+        AppError::of_with_source(
+            ErrorDetail::Internal {
+                op: InternalOp::StdoutWrite,
+            },
+            e,
+        )
     }
 }
 
@@ -27,8 +32,14 @@ pub(crate) fn write_json<Out: Write, T: Serialize>(stdout: &mut Out, v: &T) -> A
     // Small default: version/doctor envelopes are a few hundred bytes; large
     // search payloads grow via try_reserve inside serde's writer on `buf`.
     let mut buf = Vec::with_capacity(256);
-    serde_json::to_writer(&mut buf, v)
-        .map_err(|e| AppError::with_source(ErrorKind::Internal, "json serialize failed", e))?;
+    serde_json::to_writer(&mut buf, v).map_err(|e| {
+        AppError::of_with_source(
+            ErrorDetail::Internal {
+                op: InternalOp::JsonSerialize,
+            },
+            e,
+        )
+    })?;
     buf.push(b'\n');
     stdout.write_all(&buf).map_err(map_stdout_err)?;
     // Best-effort: payload already written; flush failure must not change exit code.

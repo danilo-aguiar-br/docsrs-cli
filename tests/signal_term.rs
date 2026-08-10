@@ -125,8 +125,13 @@ mod unix {
 
 #[cfg(not(unix))]
 mod non_unix {
+    /// Guards the harness gate itself: this module must never compile on Unix,
+    /// where the real signal tests above run instead.
     #[test]
-    fn signal_tests_skipped_on_non_unix() {
-        assert!(true);
+    fn signal_harness_is_unix_only() {
+        assert!(
+            !cfg!(unix),
+            "non_unix module must not compile on unix targets"
+        );
     }
 }

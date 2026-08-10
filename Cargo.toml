@@ -1,6 +1,6 @@
 [package]
 name = "docsrs-cli"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "One-shot stdin/stdout CLI that fetches crates.io and docs.rs docs for LLM agents without a daemon"
@@ -12,29 +12,65 @@ repository = "https://github.com/danilo-aguiar-br/docsrs-cli"
 documentation = "https://docs.rs/docsrs-cli"
 homepage = "https://github.com/danilo-aguiar-br/docsrs-cli"
 authors = ["Danilo Aguiar <daniloaguiarbr@proton.me>"]
-exclude = [
-    "docs_rules/",
-    "/CLAUDE.md",
-    "/AGENTS.md",
-    "/MEMORY.md",
-    ".serena/",
-    ".claude/",
-    ".grok/",
-    ".vscode/",
-    "logs/",
-    "memory/",
-    "target/",
-    "rust_out",
-    # GraphRAG / enrich-queue SQLite — qualquer pasta (não empacotar no crate)
-    "**/graphrag.sqlite",
-    "**/graphrag.sqlite-shm",
-    "**/graphrag.sqlite-wal",
-    "**/.enrich-queue.sqlite",
-    "**/.enrich-queue.sqlite-shm",
-    "**/.enrich-queue.sqlite-wal",
-    "*.sqlite",
-    "*.sqlite-shm",
-    "*.sqlite-wal",
+# An allowlist, and never a denylist. `exclude` used to live here and it failed
+# the only way a denylist can: eight audit scratch files shipped inside the crate
+# because none of their names was on the list, and the fix was to add eight more
+# names. A list of names encodes the sample that produced it, not the class it
+# claims to guard, so the next `h.json` would have shipped too (GAP-PKG-JUNK-001).
+#
+# `exclude` is deleted rather than kept alongside: Cargo ignores `exclude`
+# entirely once `include` exists, so leaving both would have made the older rules
+# silently dead while still reading as policy.
+#
+# The failure mode inverts, and that inversion is the point. A denylist fails
+# quietly — junk ships and nobody learns. An allowlist fails loudly: forget
+# `/docs/**` and `cargo publish --dry-run` cannot compile the packaged crate,
+# because `src/meta_cmds/schema.rs` pulls all twenty schemas in with `include_str!`.
+# `tests/policy/packaging.rs` gates that dependency so the loud failure arrives at
+# `cargo test` instead of at publish time.
+#
+# Two grammars on purpose. Directories enter by glob, because there the directory
+# *is* the class. Root files are named one by one, because at the root a glob is
+# exactly what lets junk through: `/*.md` would readmit `CLAUDE.md` and `gaps.md`.
+#
+# `tests/` is absent by the rule that already removed the policy suite: every
+# integration test here reads a fixture, stands up wiremock, or derives its
+# expectations from the working tree. None of them answers anything inside a
+# tarball, and whoever installs from crates.io wants the binary.
+include = [
+    "/src/**",
+    # Not the integration suite: these are compile-time inputs of `src/`. The
+    # unit tests under `src/crates_io/` and `src/docs_rs/tests/` reach them with
+    # `include_str!`, so they belong to the package by the same rule that keeps
+    # `docs/schemas/`. Dropping them left a crate whose own `cargo test` could not
+    # compile — found by `no_embedded_file_escapes_the_package_allowlist` on its
+    # first run, which is the whole argument for deriving the gate from `src/`.
+    "/tests/fixtures/**",
+    "/docs/**",
+    "/scripts/**",
+    "/skills/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/deny.toml",
+    "/rust-toolchain.toml",
+    "/LICENSE",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+    "/README.md",
+    "/README.pt-BR.md",
+    "/CHANGELOG.md",
+    "/CHANGELOG.pt-BR.md",
+    "/CONTRIBUTING.md",
+    "/CONTRIBUTING.pt-BR.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CODE_OF_CONDUCT.pt-BR.md",
+    "/INTEGRATIONS.md",
+    "/INTEGRATIONS.pt-BR.md",
+    "/SECURITY.md",
+    "/SECURITY.pt-BR.md",
+    "/llms.txt",
+    "/llms.pt-BR.txt",
+    "/llms-full.txt",
 ]
 
 [badges]
@@ -54,13 +90,18 @@ path = "src/lib.rs"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 default-target = "x86_64-unknown-linux-gnu"
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-]
+# `targets = []` builds only the default target (see docs.rs/about/metadata).
+#
+# Extra targets are not buildable here: `ring` (pulled by rustls) compiles C in
+# its build script, and the docs.rs build image ships no cross C compiler — its
+# package list has zero aarch64, darwin/apple or msvc entries. Declaring five
+# targets only produced four permanent 404s.
+#
+# This was briefly set to four real targets in 2026-08, while a pure-Rust
+# provider was in place and every one of them cross-checked clean locally. That
+# run is recorded in GAP-TOOLCHAIN-001 as the measured cost of keeping `ring`:
+# the multi-target docs are reachable the moment the C dependency leaves.
+targets = []
 
 [dependencies]
 clap = { version = "4", features = ["derive", "cargo", "wrap_help", "color", "unicode"] }
@@ -81,8 +122,32 @@ tokio = { version = "1", default-features = false, features = [
 # gzip+brotli decode; streaming body for budget caps. No cookies, no native-tls.
 # Direct rustls pin (floor ≥0.23.18; ADR 0007): ring provider installed in main.
 # reqwest uses `rustls-no-provider` so aws-lc is never linked (deny.toml bans it).
+#
+# `ring` compiles C through `cc-rs`, which conflicts with the product rule that
+# this CLI is self-contained and Rust-native. Both pure-Rust alternatives were
+# evaluated in 2026-08 and both were rejected on measurement, so the C stays and
+# the non-conformance is recorded in gaps.md as GAP-TOOLCHAIN-001 rather than
+# hidden:
+#
+#   graviola          — no C and no advisories, but requires x86_64 `adx`
+#                       (Broadwell, 2015+). On older hardware it compiles, passes
+#                       every offline test and aborts at the first handshake.
+#   rustls-rustcrypto — no C and no CPU floor, but pins `rustls-webpki ^0.102`,
+#                       which carries four advisories in certificate validation
+#                       (RUSTSEC-2026-0049/0098/0099/0104) plus `rsa` 0.9.10
+#                       (RUSTSEC-2023-0071, no patched version exists). Trading a
+#                       build-time dependency for broken certificate validation is
+#                       not a trade a TLS client may make.
+#
+# Reopen when graviola gains a non-`adx` fallback, or when rustls-rustcrypto moves
+# to a patched webpki, or when the supported hardware floor reaches Broadwell.
+#
 # brotli: feature alone is a no-op if Accept-Encoding is set without `br` — client
 # sends `gzip, br` explicitly (SCRAPE-S-004). Body stream cap still bounds bombs.
+# Mozilla trust anchors compiled into the binary (ADR 0007 section 4). Direct,
+# not transitive: reqwest 0.13 removed every webpki-roots feature, so leaving the
+# root set to reqwest silently handed it to the OS store on the 0.12 upgrade.
+webpki-roots = "1"
 rustls = { version = "0.23.18", default-features = false, features = [
     "std",
     "tls12",
@@ -128,11 +193,14 @@ futures-util = "0.3"
 regex = "1"
 sha2 = "0.10"
 fs4 = { version = "1.1.0", features = ["sync"] }
-# CPU-bound fan-out for large all.html hit scans (gated by size threshold).
-rayon = "1"
 httpdate = "1"
 
 [dev-dependencies]
+# Policy gates live in `tests/policy_gates.rs`, not in a shell script, so they
+# run on the three platforms this crate ships to instead of only where bash,
+# python3, fd and rg happen to exist. `regex` is a dev-only dependency: it never
+# reaches the release binary.
+regex = "1"
 wiremock = "0.6"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "test-util"] }

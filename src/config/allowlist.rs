@@ -54,7 +54,15 @@ mod tests {
     fn production_hosts_require_https() {
         assert!(is_allowed_origin_scheme_host("https", HOST_DOCS_RS, false));
         assert!(!is_allowed_origin_scheme_host("http", HOST_DOCS_RS, false));
-        assert!(is_allowed_origin_scheme_host("http", HOST_LOOPBACK_IPV4, true));
-        assert!(!is_allowed_origin_scheme_host("http", HOST_LOOPBACK_IPV4, false));
+        assert!(is_allowed_origin_scheme_host(
+            "http",
+            HOST_LOOPBACK_IPV4,
+            true
+        ));
+        assert!(!is_allowed_origin_scheme_host(
+            "http",
+            HOST_LOOPBACK_IPV4,
+            false
+        ));
     }
 }

@@ -20,18 +20,24 @@
 - **Exceção Usage (ERR-O-008):** envelopes JSON com `ErrorKind::Usage` **podem** embutir help multi-line do clap como payload de `message` para agentes. Esse texto não segue o estilo Display curto de domínio; falhas de domínio continuam com mensagens curtas em minúsculas
 - Clone: `AppError: Clone` compartilha o source via `Arc` para retries e logging reterem o erro original com baixo custo
 - Classificação: `ErrorKind::is_retryable` / `is_permanent` e métodos espelhados em `AppError` para contratos de agente (alinhado ao retry do ADR 0001)
+- Os dois **nem sempre** concordam, e o `ErrorKind::Io` é a razão: o kind sozinho não separa disco cheio de permissão negada
+- `ErrorKind::Io.retryable()` responde `false` de forma conservadora, enquanto `AppError::retryable` lê a causa e pode responder `true`
+- O campo do wire vem sempre do `AppError`, então a resposta conservadora do kind nunca chega a um envelope
+- O exit 74 carrega três kinds, não dois: `Network` (retryable), `Budget` (permanente na mesma config) e `Io` (retryable só quando a causa é transitória)
+- `Io` é portanto o único kind cuja retryability não é função do kind, então ramificar só por `kind` erra nele — leia `error.retryable`
 - Tetos locais de body/output usam `ErrorKind::Budget` (exit 74, permanente na mesma config); falhas de transporte mantêm `ErrorKind::Network` (exit 74, retryable)
 - Caminho de emissão: toda falha de domínio na CLI passa por `emit_error` (envelope JSON ou stderr localizado)
-- Envelope JSON de erro no wire (1.2.0+): topo com `schema_version`, `ok:false`, **`command`**, **`duration_ms`** e `error` aninhado (`code`, `kind`, `message`, `retryable`, `retry_after_secs` opcional) — paridade com envelopes de sucesso para correlação por agentes
+- Envelope JSON de erro no wire (1.2.0+): topo com `schema_version`, `ok:false`, **`command`**, **`duration_ms`** e `error` aninhado (`code`, `kind`, `message`, `retryable`, `retry_after_secs` opcional, `suggestions` opcional) — paridade com envelopes de sucesso para correlação por agentes
+- `suggestions` (1.3.0) publica o ranking do `--suggest` como dado estruturado, então um agente que se recupera de 404 nunca lê a prosa de `message`
 - Falhas de load de config não devem usar `?` nu caindo em path hardcoded de exit 70
 - Política de panic: só invariantes estáticos (regex / seletores CSS hardcoded) usam `.expect("… valid by construction")`
 - I/O externo, parse e config sempre retornam `AppResult`
 - Segurança: mensagens e envelopes JSON nunca incluem credenciais, bodies brutos de resposta ou paths de cache com segredos
-- Mensagens voltadas a operadores **não** devem promover variáveis de ambiente de harness de teste como knobs de produto (env de path de produto é proibido (só flags CLI + XDG desde 1.1.3))
+- Mensagens voltadas a operadores **não** devem promover variáveis de ambiente de harness de teste como knobs de produto (env de path de produto é proibido: só flags CLI + XDG desde 1.1.3)
 - `from_http_status` aceita apenas um label curto de contexto não sensível
 
 ## Consequências
-- Agentes obtêm `error.kind`, `error.code`, `retryable` e `retry_after_secs` opcional estáveis sem raspar texto livre
+- Agentes obtêm `command` e `duration_ms` estáveis no topo, mais `error.kind`, `error.code`, `retryable` e `retry_after_secs` opcional, sem raspar texto livre
 - Adicionar um novo `ErrorKind` é mudança SemVer minor para consumidores externos
 - Desenvolvedores devem rotear falhas precoces da CLI por `emit_error`, não por `?` no handler de último recurso de `main`
 - Fora de escopo neste produto: Sentry/OTLP, mapeamento de status de HTTP server, FFI `catch_unwind`, rollback de database, circuit breaker (ver ADR 0001 para a lista OOS de retry)

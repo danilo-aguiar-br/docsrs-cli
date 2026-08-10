@@ -64,6 +64,6 @@ Legend: S spoofing · T tampering · R repudiation · I information disclosure �
 - Prioritize by real exposure: SSRF/allowlist bypass and unbounded allocation rank above cosmetic issues
 
 ## Related
-- `SECURITY.md`, `src/http.rs`, `src/config.rs`, `src/domain.rs`, `src/cache.rs`
+- `SECURITY.md`, `src/http/`, `src/config/`, `src/domain/`, `src/cache/`
 - ADR 0001 (retry), 0002 (errors), 0003 (web fetch scope)
 - Gaps inventory: Camada G (defensive) + Camada H (security development)

@@ -8,6 +8,7 @@
     "version",
     "msrv",
     "schema_version",
+    "agent_notes",
     "commands"
   ],
   "additionalProperties": false,
@@ -28,20 +29,30 @@
     },
     "agent_notes": {
       "type": "object",
-      "description": "Stable hints for LLM callers about streams and lifecycle",
+      "description": "Stable hints for LLM callers about streams and lifecycle. All four keys are compile-time constants, so none of them is ever absent.",
+      "required": [
+        "stdout",
+        "stderr",
+        "json_auto",
+        "lifecycle"
+      ],
       "additionalProperties": false,
       "properties": {
         "stdout": {
-          "type": "string"
+          "type": "string",
+          "description": "What stdout carries: data only, as a JSON envelope or as markdown"
         },
         "stderr": {
-          "type": "string"
+          "type": "string",
+          "description": "What stderr carries: diagnostics only, never contract data"
         },
         "json_auto": {
-          "type": "string"
+          "type": "string",
+          "description": "When JSON is chosen without being asked for: stdout that is not a TTY selects JSON unless --format markdown|text overrides it. This is why a piped call answers in JSON with no flag."
         },
         "lifecycle": {
-          "type": "string"
+          "type": "string",
+          "description": "Process model: BORN, EXECUTE, FINALIZE, DIE. One-shot with no daemon, so no state survives the call and nothing has to be torn down between calls."
         }
       }
     },
@@ -51,7 +62,9 @@
         "type": "object",
         "required": [
           "name",
-          "about"
+          "about",
+          "args",
+          "subcommands"
         ],
         "additionalProperties": false,
         "properties": {

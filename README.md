@@ -17,7 +17,7 @@
 - No daemon, no sticky session, no product telemetry
 - JSON auto-selects when stdout is not a TTY
 - Public HTTP only against an allowlist of docs hosts
-- Current product line is 1.2.x (release 1.2.0)
+- Current product line is 1.3.x (release 1.3.0)
 
 
 ## The Pain
@@ -45,7 +45,7 @@
 - Budgets above hard max fail closed with exit 65 (no silent clamp)
 - Error envelopes include `command` and `duration_ms` like success envelopes
 - `search-in-crate` over `all.html` with `--match exact|prefix|substring`
-- `--suggest` ranks exact → prefix → substring → edit-distance on get-item 404
+- `--suggest` ranks exact → prefix → substring → edit-distance on get-item 404, returned as `error.suggestions[{path,kind}]`
 - `item_path` accepts hyphens and normalizes to underscores for rustc paths
 - Markdown scrub removes rustdoc chrome (`§`, “Copy item path”)
 - Body over cap is `error.kind=budget` (exit 74, `retryable=false`)
@@ -56,14 +56,27 @@
 - `cache` and `config` for XDG maintenance without secrets
 
 
-## What's New in 1.2.0
+## What's New in 1.3.0
+- `--sort-by` and `--max-items` complete the reduction pipeline: filter → sort-by → dedupe-by → max-items → select → count-only → truncate-content → max-output-bytes
+- `agent_surface` gained `limited`, so a small result is distinguishable from a capped one
+- `agent-surface` schema is published; `schema --cmd all` carries 20 wire names
+- `get-item` reaches enum variants and struct fields (`variant`, `structfield`), plus trait associated items and required trait methods
+- `error.suggestions` publishes the `--suggest` ranking as data, so no agent parses `error.message` prose
+- `anchor_family` names the real rustdoc anchor family behind a `method` extraction
+- `log_directive` config key steers stderr verbosity; an unparseable value is rejected at load (exit 78)
+- `RUST_LOG` is no longer read: it used to outrank the CLI, which is a product knob living in env
+- TLS trust anchors are back to bundled `webpki-roots` after a `reqwest` upgrade had silently moved them to the OS store
+- Policy gates are Rust integration tests (`cargo test --test policy_gates`), so they run on Linux, macOS and Windows alike
+- Full notes under [CHANGELOG.md](CHANGELOG.md) section `[1.3.0]`
+
+## Earlier highlights (1.2.0)
 - Method fail-closed: missing `#method.X` returns `not_found` (exit 66), not a parent-page false success
 - `--suggest` ranks method leaves from the parent type HTML on method typos
 - Error envelopes carry `command` + `duration_ms` (parity with success)
 - Values above hard max for body/output budgets fail with exit 65 (no silent clamp)
 - Method 404 `source_url` keeps the first probe kind (`struct`), not the last
 - Dry-run documents `validation=url_shape_only` and parent kind probes
-- Offline schema files match `schema --cmd all` (19 wire names including aliases)
+- Offline schema files match `schema --cmd all` (19 wire names including aliases at that release)
 - Full notes under [CHANGELOG.md](CHANGELOG.md) section `[1.2.0]`
 
 ## Earlier highlights (1.1.x)
@@ -121,7 +134,8 @@ docsrs-cli doctor --online --json
 - `--sort` accepts `relevance`, `downloads`, `recent-downloads`, `recent-updates`, `new`, `alphabetical`
 - `readme <crate> [--crate-version V]` — docs.rs crate overview docblock
 - `get-item <crate> <item_type> <item_path> [--crate-version V] [--suggest]`
-- `item_type` accepts `module`, `struct`, `trait`, `enum`, `union`, `fn`/`function`/`method`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`
+- `item_type` accepts `module`/`mod`, `struct`, `trait`, `enum`, `union`, `fn`/`function`/`method`, `type`, `const`/`constant`, `static`, `macro`, `attr`/`attribute`, `derive`, `variant`, `structfield`/`field`
+- `variant` and `structfield` have no page of their own: qualify as `Parent::leaf` or exit 65 names the parent kinds
 - `method` is an alias of `fn` for associated methods
 - Associated methods resolve to parent type pages with `#method.name` and `item_name`
 - Successful method fetches set `data.extraction` to `method`; missing anchors are `not_found` (exit 66)
@@ -136,9 +150,10 @@ docsrs-cli doctor --online --json
 - `doctor --online` — also probes crates.io and docs.rs DNS
 - `commands` — full command tree for agents
 - `schema --cmd <name>` — JSON Schema for a command payload
-- Schema targets: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `cache`, `config` plus aliases (`cache-path`, `cache-clear`, `cache-stats`, `config-path`, `config-show`, `config-init`); use `schema --cmd all --json` for the full bundle
+- Schema targets: `search-crates`, `readme`, `get-item`, `search-in-crate`, `version`, `doctor`, `commands`, `schema`, `completions`, `error`, `dry-run`, `agent-surface`, `cache`, `config` plus aliases (`cache-path`, `cache-clear`, `cache-stats`, `config-path`, `config-show`, `config-init`); use `schema --cmd all --json` for the full bundle
 - `completions <shell>` — raw shell script by default; JSON only with explicit `--json`
 - Shells: `bash`, `zsh`, `fish`, `elvish`, `power-shell` (`powershell` alias)
+- `cache path` — print the resolved cache root, its winning layer (`cli` / `xdg` / `unresolved`) and `no_cache`
 - `cache stats` — report entry count, bytes, and budget
 - `cache clear` — delete cached HTTP bodies
 - `config path` — print resolved config/cache dirs and winning layer
@@ -152,6 +167,7 @@ docsrs-cli doctor --online --json
 - Network payloads expose `cache_hit` for local disk cache only
 - `get-item` exposes `item_name`, optional `resolved_version`; method success includes `extraction=method`
 - Agents MUST reject method success when `extraction` is missing or is the legacy `item_page` value
+- `anchor_family` carries the real rustdoc family, because `extraction` reports `method` for variants and struct fields too
 - `readme` exposes optional `resolved_version` (stdlib channel is `stable`)
 - `search-in-crate` echoes `match_mode` and optional `item_type`
 - `search-crates` pagination tokens live under `data.meta.next_page` / `prev_page`
@@ -164,10 +180,36 @@ docsrs-cli doctor --online --json
 - Paths: use `--config-dir` / `--cache-dir` (or platform XDG via `directories`)
 - Locale: use `--lang` or TOML `lang` (never product env)
 - Product knobs (timeout, UA, cache TTL, retries, concurrency, lang, paths) are **never** read from `DOCSRS_CLI_*` env at runtime
-- Host diagnostics only: `RUST_LOG`, `NO_COLOR`, `HTTP(S)_PROXY` / `NO_PROXY`
 - Use CLI flags and XDG `config.toml` for product settings
-- `RUST_LOG` — tracing filter (stderr diagnostics only; not product telemetry)
-- `NO_COLOR` / `CLICOLOR_FORCE` — diagnostics only
+- `RUST_LOG` is **not** read: stderr verbosity comes from `-q` / `-v` or the TOML key `log_directive`
+- Terminal capability only: `NO_COLOR`, `TERM`, `CLICOLOR_FORCE` — they describe the *device*, like `isatty`, and carry no product configuration
+- Transport only: `HTTP(S)_PROXY` / `NO_PROXY`, honored by `reqwest` itself, never by a product knob
+
+
+## Payload Reduction
+- The CLI cuts the payload before serialization; no `jq` / `jaq` stage is needed
+- Project keys: `docsrs-cli --select planned_url --dry-run readme serde --json` (alias `--fields`)
+- Missing keys are skipped, never emitted as null
+- Filter: `key=value`, `key!=value`, `key~substring`; repeat `--filter` for AND
+- A malformed `--filter` exits `65`; a typo never looks like an empty result
+- Sort with `--sort-by <KEY>` (stable, ascending; elements without the key go last)
+- Numbers compare numerically, so `9` sorts before `10`, never after it
+- Limit emission with `--max-items <N>`; it bounds the output, not the query
+- `search-in-crate --limit` bounds the query instead: it decides how much gets classified
+- Both exist because they are different bounds, and clap rejects two flags sharing a name
+- Deduplicate with `--dedupe-by <KEY>`; count with `--count-only`
+- Shorten strings with `--truncate-content <N>` (characters, never split UTF-8)
+- Cap the whole envelope with `--max-output-bytes <N>`: it drops whole hits, never bytes, so the JSON stays parseable
+- Measured on `search-in-crate serde "" --limit 200`: `--max-output-bytes 2000` emits 1973 bytes and 12 of 62 hits
+- Used alone it does not activate the pipeline, so `agent_surface` is absent and `data.truncated` carries the signal
+- Order: filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- Sorting before dedupe decides which duplicate survives; limiting after it protects the slots
+- `--count-only` therefore counts what survived the filter, the dedupe and the limit
+- `agent_surface` reports `input_count`, `output_count`, `limited`, `content_truncated`, `output_truncated`
+- `limited` separates a genuinely small result from one that `--max-items` cut
+- Sibling counters that name the array follow it: `emitted` is rewritten, `total` never is
+- Top-N without a pipe: `docsrs-cli --filter kind=struct --sort-by name --max-items 5 --select name search-in-crate serde "" --limit 200 --json`
+- Full contract: `docsrs-cli schema --cmd agent-surface --json`
 
 
 ## Integration Patterns
@@ -216,11 +258,16 @@ docsrs-cli doctor --online --json
 - [How to use](docs/HOW_TO_USE.md)
 - [Agents](docs/AGENTS.md)
 - [Cookbook](docs/COOKBOOK.md)
+- [Configuration](docs/CONFIGURATION.md) — every flag and every `config.toml` key
 - [Cross platform](docs/CROSS_PLATFORM.md)
 - [Migration](docs/MIGRATION.md)
 - [Testing](docs/TESTING.md)
 - [JSON schemas](docs/schemas/README.md)
+- [Architecture decisions](docs/decisions/) — nine ADRs, each with a pt-BR pair
 - [Integrations](INTEGRATIONS.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 - [llms.txt](llms.txt)
 
 
@@ -236,7 +283,7 @@ docsrs-cli doctor --online --json
 
 ## Changelog
 - See [CHANGELOG.md](CHANGELOG.md) for version history
-- Current release notes for 1.2.0 live under `[1.2.0]`
+- Current release notes for 1.3.0 live under `[1.3.0]`
 
 
 ## License

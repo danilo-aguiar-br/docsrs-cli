@@ -17,7 +17,7 @@ docsrs-cli get-item serde trait Serialize --json
 ```
 - Confirm exit code 0 after each command
 - Confirm stdout is a JSON object with `"ok":true`
-- Confirm `data.version` from `docsrs-cli version --json` is `1.2.0` on the 1.2 line
+- Confirm `data.version` from `docsrs-cli version --json` is `1.3.0` on the 1.3 line
 
 ## Feature 1.1 → Guide
 | Feature 1.1 | Guide section |
@@ -32,7 +32,7 @@ docsrs-cli get-item serde trait Serialize --json
 | Dry-run `planned_params.crate_name` | Advanced Patterns |
 | Completions raw shell (JSON only with `--json`) | Advanced Patterns |
 | Product knobs: flags + TOML only (no `DOCSRS_CLI_*`) | Configuration |
-| Schemas `schema` / `completions` / `error` / `dry-run` | Full Command Surface |
+| Schemas `schema` / `completions` / `error` / `dry-run` / `agent-surface` | Full Command Surface |
 | Upgrade from 0.1.x | [MIGRATION.md](MIGRATION.md) |
 
 ## Feature 1.2.0 → Guide
@@ -44,7 +44,7 @@ docsrs-cli get-item serde trait Serialize --json
 | Budget above hard max → exit 65 | Advanced Patterns / JSON Fields |
 | `--suggest` method leaves from parent page | Core Commands |
 | Dry-run `validation=url_shape_only` | Advanced Patterns |
-| `schema --cmd all` (19 wire names) | Full Command Surface |
+| `schema --cmd all` (19 wire names at that release) | Full Command Surface |
 | Upgrade from 1.1.x | [MIGRATION.md](MIGRATION.md) |
 
 ## Feature 1.1.x → Guide (retained)
@@ -69,8 +69,19 @@ docsrs-cli get-item serde trait Serialize --json
 - Fetch stdlib overview (channel in `resolved_version`): `docsrs-cli readme std --json`
 - Fetch a typed item: `docsrs-cli get-item clap trait clap::Parser --json`
 - Fetch an associated method: `docsrs-cli get-item tokio method runtime::Runtime::new --json`
-- Successful method payloads set `data.extraction` to `method` only
-- Missing method anchors return `not_found` (exit 66); never treat parent-page markdown as method success
+- Fetch a required trait method: `docsrs-cli get-item std method iter::Iterator::next --json`
+- Fetch an associated type: `docsrs-cli get-item std type iter::Iterator::Item --json`
+- Fetch an associated constant: `docsrs-cli get-item std const time::Duration::MAX --json`
+- `method`, `type` and `const` accept `Parent::member` when rustdoc renders the member as an anchor on the parent page
+- Rustdoc uses one anchor prefix per member category, all coexisting on the parent page
+- `source_url` echoes the anchor that exists (`#tymethod.next`, `#associatedtype.Item`), not the one planned
+- A lowercase parent stays a free item: `docsrs-cli get-item std const u32::MAX --json` keeps its module page
+- Successful member payloads set `data.extraction` to `method` only
+- That value means "came from the member anchor", never "the member is a function"
+- `data.anchor_family` reports which family actually matched (`variant`, `structfield`, `tymethod`, `associatedtype`, `associatedconstant`, `method`)
+- Read the family from `anchor_family` and keep asserting `extraction`: one names the shape, the other rejects a parent-page false success
+- Example: `docsrs-cli get-item std variant option::Option::Some --json` returns `extraction=method` with `anchor_family=variant`
+- Missing member anchors return `not_found` (exit 66); never treat parent-page markdown as member success
 - Typo example (expect exit 66 + suggestions): `docsrs-cli get-item tokio method Runtime::neww --suggest --json`
 - Hyphenated paths normalize: `docsrs-cli --dry-run get-item async-trait attribute async-trait --json`
 - Rustdoc chrome such as `§` and "Copy item path" is scrubbed from markdown
@@ -89,9 +100,9 @@ docsrs-cli get-item serde trait Serialize --json
 - `get-item` with optional `--crate-version` and `--suggest`
 - `search-in-crate` with optional `--crate-version`, `--item-type`, `--limit`, `--match`
 - `version`, `doctor`, `doctor --online`, `commands`
-- `schema --cmd` for search-crates, readme, get-item, search-in-crate, version, doctor, commands, cache, config, schema, completions, error, dry-run (plus aliases; use `schema --cmd all --json` for the 19-name bundle)
+- `schema --cmd` for search-crates, readme, get-item, search-in-crate, version, doctor, commands, cache, config, schema, completions, error, dry-run, agent-surface (plus aliases; use `schema --cmd all --json` for the 20-name bundle)
 - `completions` for bash, zsh, fish, elvish, power-shell, powershell (raw shell by default; `--json` only when explicit)
-- `cache stats` and `cache clear`
+- `cache path`, `cache stats` and `cache clear`
 - `config path`, `config show`, `config init`, `config init --force`
 
 ## Daemon
@@ -134,6 +145,9 @@ docsrs-cli get-item serde trait Serialize --json
 - `search-in-crate` always echoes `match_mode`
 - Ranked hits may include `score` when a query is present
 - Failure envelopes expose `command`, `duration_ms`, `error.kind`, and `error.retryable`
+- A not-found answered by `--suggest` adds `error.suggestions`, an array of `{path, kind}` ordered best first
+- Read that array instead of parsing `error.message`: each entry is a ready command line, as in `docsrs-cli get-item tokio <kind> <path>`
+- The field is absent when the ranking found nothing, never JSON `null` and never an empty array
 - Never retry `kind=budget` (exit 74); raise `--max-body-bytes` only within hard max (above hard max is exit 65)
 - JSON field names and technical messages stay English even when stderr is localized
 
@@ -150,16 +164,49 @@ docsrs-cli get-item serde trait Serialize --json
 - Online readiness: `docsrs-cli doctor --online --json`
 - Treat doctor healthy only when top-level `ok` and `data.ok` are both true
 - Inspect cache: `docsrs-cli cache stats --json`
-- Clear cache: `docsrs-cli cache clear --json`
+- Clear cache: `docsrs-cli cache clear --yes --json` (or `--cache-dir <DIR>` to name the root)
 - Create default config: `docsrs-cli config init --json`
-- Overwrite config: `docsrs-cli config init --force --json`
+- Overwrite config: `docsrs-cli config init --force --yes --json` (or `--config-dir <DIR>`)
+- Both destructive verbs exit 64 and act on nothing when given neither flag
 - Generate completions (raw script): `docsrs-cli completions bash`
 - Completions as JSON only when asked: `docsrs-cli completions bash --json`
 - Other shells: `docsrs-cli completions zsh`, `completions fish`, `completions elvish`, `completions power-shell`, `completions powershell`
 
+## Payload Reduction
+- Cut the payload with the CLI itself; a `jq` / `jaq` stage is no longer needed
+- Project keys: `docsrs-cli --select planned_url --dry-run readme serde --json`
+- Alias form: `docsrs-cli --fields planned_url --dry-run readme serde --json`
+- A key absent from `data` is skipped, never emitted as null
+- Filter elements: `key=value`, `key!=value`, `key~substring` (repeat the flag for AND)
+- Malformed filter fails closed: `docsrs-cli --filter 'no operator' --dry-run readme serde --json` → exit 65
+- Drop repeats: `docsrs-cli --dedupe-by name search-in-crate serde Serialize --json`
+- Count instead of payload: `docsrs-cli --count-only --dry-run readme serde --json` → `data` is `{"count":1}`
+- Sort elements: `docsrs-cli --sort-by name search-in-crate serde Serialize --json`
+- The sort is stable and ascending; elements without the key sort last, never first
+- Numbers compare numerically: `--sort-by downloads` puts `9` before `10`
+- Cap the emission: `docsrs-cli --max-items 5 search-in-crate serde "" --limit 200 --json`
+- `--max-items` bounds what is written; `search-in-crate --limit` bounds what is classified
+- Top-N after a filter, with no `jaq` stage: `docsrs-cli --filter kind=struct --sort-by name --max-items 5 --select name search-in-crate serde "" --limit 200 --json`
+- Shorten strings: `docsrs-cli --truncate-content 200 readme serde --json`
+- Cap the envelope: `docsrs-cli --max-output-bytes 2000 search-in-crate serde "" --limit 200 --json`
+- That budget drops whole hits and re-serialises after each one, so the JSON is never cut mid-string
+- Measured: 1973 bytes and 12 of 62 hits survive; at `--max-output-bytes 500` only 1 hit does
+- `--max-output-bytes` alone does not activate the pipeline, so `agent_surface` is absent and `data.truncated` is the signal
+- Order is filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- `--count-only` counts the slice: with `--max-items 5` it reports at most 5
+- Read `agent_surface` for `input_count`, `output_count`, `limited`, `content_truncated`, `output_truncated`
+- `limited` is true only when `--max-items` actually discarded something
+- `emitted` is rewritten to match the reduced `hits`; `total` keeps describing the upstream index
+- Full contract: `docsrs-cli schema --cmd agent-surface --json`
+
 ## Configuration
 - Precedence for product settings: CLI flags > XDG `config.toml` > built-in defaults
 - Product knobs are not read from `DOCSRS_CLI_*` environment variables
+- No product knob is read from ANY environment variable, including `RUST_LOG`
+- Steer stderr verbosity with `-q` / `-v`, or TOML `log_directive` (e.g. `docsrs_cli=debug,docsrs_cli::http=trace`)
+- An explicit `-q` / `-v` outranks `log_directive`; an unparseable directive fails closed at load (exit 78), like any other bad TOML value
+- The host locale (`LC_ALL` / `LC_MESSAGES` / `LANG`) picks stderr prose when `--lang` and TOML `lang` are absent; it never changes a setting and never changes stdout
+- `NO_COLOR`, `TERM` and `CLICOLOR_FORCE` are honoured, and only those three: they describe the terminal device the way `isatty` does, never product configuration, and `--no-color` outranks all three
 - Isolate storage with `--config-dir` / `--cache-dir` only (product ignores `DOCSRS_CLI_*` path env)
 - Show effective config: `docsrs-cli config show --json`
 - Print resolved paths: `docsrs-cli config path --json`
@@ -169,7 +216,7 @@ docsrs-cli get-item serde trait Serialize --json
 - Origins for mocks/tests: TOML `crates_io_origin` / `docs_rs_origin` under a sandbox home
 
 ## Other Subcommands
-- `version` prints binary identity (`1.2.0` on this line)
+- `version` prints binary identity (`1.3.0` on this line)
 - `doctor` validates TLS, paths, concurrency, contact, and retry policy
 - `doctor` top-level `ok` mirrors `data.ok` (exit 78 when checks fail)
 - `doctor --online` adds opt-in network probes to crates.io and docs.rs
@@ -181,8 +228,10 @@ docsrs-cli get-item serde trait Serialize --json
 ## Integration With AI Agents
 - Always prefer `--json` for machine consumers
 - Parse exit code before reading stdout
-- Branch retries on `error.retryable`, not exit code alone (exit 74 may be `budget`)
-- JSON stdout stays English; human stderr may follow `--lang` or `--lang`
+- Branch retries on `error.retryable`, not exit code alone (exit 74 may be `budget` or `io`)
+- `kind=io` is a filesystem failure from the environment (full disk, read-only mount), not a product bug
+- Its `retryable` follows the OS cause, so read the field rather than the kind
+- JSON stdout stays English; human stderr may follow the `--lang` flag or the `lang` key in `config.toml`
 - Read [AGENTS.md](AGENTS.md) and packaged skills [docsrs-cli-en](../skills/docsrs-cli-en/SKILL.md) / [docsrs-cli-pt](../skills/docsrs-cli-pt/SKILL.md)
 - Read machine schemas under [schemas/README.md](schemas/README.md)
-- Read [MIGRATION.md](MIGRATION.md) when upgrading from 0.1.x, 1.1.x, or to 1.2.0
+- Read [MIGRATION.md](MIGRATION.md) when upgrading from 0.1.x, 1.1.x, 1.2.x, or to 1.3.0

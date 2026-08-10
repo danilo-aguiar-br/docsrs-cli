@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, InternalOp};
 
 /// Estimated peak RSS (MiB) for one CPU-bound parse task.
 ///
@@ -82,17 +82,18 @@ impl ConcurrencyBudget {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Internal`] when the semaphore is closed (should not
+    /// Returns [`crate::error::ErrorKind::Internal`] when the semaphore is closed (should not
     /// happen in the one-shot lifecycle). The `AcquireError` is preserved as
     /// [`std::error::Error::source`].
     pub async fn acquire_owned(&self) -> AppResult<OwnedSemaphorePermit> {
-        self.semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| {
-                AppError::with_source(ErrorKind::Internal, "concurrency semaphore closed", e)
-            })
+        self.semaphore.clone().acquire_owned().await.map_err(|e| {
+            AppError::of_with_source(
+                ErrorDetail::Internal {
+                    op: InternalOp::SemaphoreClosed,
+                },
+                e,
+            )
+        })
     }
 
     /// Run CPU / blocking work on Tokio's blocking pool under this budget.
@@ -102,8 +103,8 @@ impl ConcurrencyBudget {
     ///
     /// # Errors
     ///
-    /// Propagates closure errors. Maps worker panic to [`ErrorKind::Internal`]
-    /// and abort/cancel to [`ErrorKind::Interrupted`].
+    /// Propagates closure errors. Maps worker panic to [`crate::error::ErrorKind::Internal`]
+    /// and abort/cancel to [`crate::error::ErrorKind::Interrupted`].
     pub async fn run_cpu_bound<F, T>(&self, f: F) -> AppResult<T>
     where
         F: FnOnce() -> AppResult<T> + Send + 'static,
@@ -117,14 +118,16 @@ impl ConcurrencyBudget {
         match join.await {
             Ok(inner) => inner,
             Err(e) if e.is_cancelled() => Err(AppError::interrupted()),
-            Err(e) if e.is_panic() => Err(AppError::with_source(
-                ErrorKind::Internal,
-                "cpu worker panicked during parse",
+            Err(e) if e.is_panic() => Err(AppError::of_with_source(
+                ErrorDetail::Internal {
+                    op: InternalOp::WorkerPanic,
+                },
                 e,
             )),
-            Err(e) => Err(AppError::with_source(
-                ErrorKind::Internal,
-                "cpu worker join failed",
+            Err(e) => Err(AppError::of_with_source(
+                ErrorDetail::Internal {
+                    op: InternalOp::WorkerJoin,
+                },
                 e,
             )),
         }
@@ -180,29 +183,89 @@ pub fn max_blocking_threads() -> usize {
     MAX_EXPLICIT_CONCURRENCY
 }
 
-/// Linux `MemAvailable` in MiB; `None` when unavailable.
+/// Path exposing kernel memory counters on Linux.
+const LINUX_MEMINFO_PATH: &str = "/proc/meminfo";
+
+/// `/proc/meminfo` field prefix carrying available memory in KiB.
+const MEM_AVAILABLE_PREFIX: &str = "MemAvailable:";
+
+/// KiB per MiB, used to convert the `/proc/meminfo` unit.
+const KIB_PER_MIB: u64 = 1024;
+
+/// Linux `MemAvailable` in MiB; `None` on other platforms or on parse failure.
+///
+/// Uses a runtime [`cfg!`] guard instead of a `#[cfg]` attribute so the whole
+/// body is type-checked on every target from a single host build. Attribute
+/// `cfg` is resolved during macro expansion, before type checking, which lets
+/// a non-host branch reach a release unverified. The comparison is a compile-
+/// time constant, so the branch is folded away and costs nothing at runtime.
 fn free_ram_mib() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let text = fs::read_to_string("/proc/meminfo").ok()?;
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-                return Some(kb / 1024);
-            }
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let text = fs::read_to_string(LINUX_MEMINFO_PATH).ok()?;
+    parse_mem_available_mib(&text)
+}
+
+/// Parses `MemAvailable` from `/proc/meminfo` contents, in MiB.
+///
+/// Pure and platform-agnostic so it stays unit-testable on every target.
+/// Returns `None` when the field is absent, empty, or not a base-10 integer.
+fn parse_mem_available_mib(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix(MEM_AVAILABLE_PREFIX) {
+            let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kib / KIB_PER_MIB);
         }
-        None
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = fs::metadata;
-        None
-    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorKind;
+
+    /// Realistic `/proc/meminfo` head: only `MemAvailable` must be read.
+    const MEMINFO_SAMPLE: &str = "MemTotal:       16341234 kB\nMemFree:         1234567 kB\nMemAvailable:    8388608 kB\nBuffers:          123456 kB\n";
+
+    #[test]
+    fn parses_mem_available_into_mib() {
+        // 8388608 KiB / 1024 = 8192 MiB
+        assert_eq!(parse_mem_available_mib(MEMINFO_SAMPLE), Some(8192));
+    }
+
+    #[test]
+    fn missing_field_yields_none() {
+        let text = "MemTotal:       16341234 kB\nMemFree:         1234567 kB\n";
+        assert_eq!(parse_mem_available_mib(text), None);
+    }
+
+    #[test]
+    fn non_numeric_value_yields_none() {
+        assert_eq!(
+            parse_mem_available_mib("MemAvailable:    not-a-number kB\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn truncated_line_without_value_yields_none() {
+        assert_eq!(parse_mem_available_mib("MemAvailable:\n"), None);
+    }
+
+    #[test]
+    fn empty_input_yields_none() {
+        assert_eq!(parse_mem_available_mib(""), None);
+    }
+
+    #[test]
+    fn free_ram_is_none_or_positive_on_every_platform() {
+        // Runtime cfg! guard keeps this callable (and type-checked) everywhere.
+        if let Some(mib) = free_ram_mib() {
+            assert!(mib > 0, "MemAvailable reported {mib} MiB");
+        }
+    }
 
     #[test]
     fn configured_override_respected() {
@@ -243,7 +306,9 @@ mod tests {
         let b = ConcurrencyBudget::new(1);
         let err = b
             .run_cpu_bound(|| -> AppResult<()> {
-                Err(AppError::new(ErrorKind::Parse, "synthetic parse failure"))
+                Err(AppError::of(ErrorDetail::Internal {
+                    op: InternalOp::SyntheticParseFailure,
+                }))
             })
             .await
             .unwrap_err();

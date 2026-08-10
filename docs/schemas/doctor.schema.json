@@ -25,7 +25,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Stable check id such as tls, config_dir, cache_dir, concurrency, retry_policy, user_agent_contact, online_crates_io, online_docs_rs"
+            "description": "Stable check id. The offline run emits, in order: platform, http_client_posture, domain_types, error_model, unsafe_posture, web_fetch_posture, user_agent, config_dir, config_source, config_file, cache_source, dotenv_runtime, secrets_layers, timeouts, concurrency, retry_policy, disk_cache, rate_limit_dir, lang, user_agent_contact. Adding --online appends online_crates_io and online_docs_rs. There is no check named tls: the TLS posture is reported by http_client_posture."
           },
           "ok": {
             "type": "boolean"

@@ -6,7 +6,9 @@
   "required": [
     "name",
     "version",
-    "msrv"
+    "msrv",
+    "os",
+    "arch"
   ],
   "additionalProperties": false,
   "properties": {
@@ -21,10 +23,12 @@
       "type": "string"
     },
     "os": {
-      "type": "string"
+      "type": "string",
+      "description": "Target family the binary was built for. Always present: the field is a compile-time constant, never an option."
     },
     "arch": {
-      "type": "string"
+      "type": "string",
+      "description": "Target architecture the binary was built for. Always present, for the same reason as os."
     }
   }
 }

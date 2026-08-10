@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::config::MAX_VERSION_CHARS;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail, Subject};
 
 use super::regex::compile_bounded_regex;
 
@@ -21,7 +21,7 @@ impl VersionArg {
     ///
     /// # Errors
     ///
-    /// Propagates [`ErrorKind::InvalidInput`] from [`Self::parse`] when the
+    /// Propagates [`crate::error::ErrorKind::InvalidInput`] from [`Self::parse`] when the
     /// provided token is present and invalid.
     pub fn parse_opt(raw: Option<&str>) -> AppResult<Self> {
         let v = raw
@@ -35,15 +35,22 @@ impl VersionArg {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for unknown channels, `v`-prefixed
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for unknown channels, `v`-prefixed
     /// SemVer, build metadata, or malformed versions.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the hardcoded semver-ish regex fails to compile inside its
+    /// [`std::sync::LazyLock`]. The pattern is a compile-time literal well under
+    /// the bounded `size_limit` / `dfa_size_limit`, so no runtime input can reach
+    /// this path.
     pub fn parse(v: &str) -> AppResult<Self> {
         let v = v.trim();
         if v.chars().count() > MAX_VERSION_CHARS {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("version exceeds {MAX_VERSION_CHARS} characters"),
-            ));
+            return Err(AppError::of(ErrorDetail::TooLong {
+                subject: Subject::Version,
+                limit: MAX_VERSION_CHARS,
+            }));
         }
         if v == "latest" {
             return Ok(Self(v.to_string()));
@@ -52,26 +59,20 @@ impl VersionArg {
             return Ok(Self(v.to_string()));
         }
         if v.starts_with('v') || v.starts_with('V') {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "version must not start with 'v' prefix",
-            ));
+            return Err(AppError::of(ErrorDetail::VersionVPrefix));
         }
         if v.contains('+') {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "version build metadata is not accepted",
-            ));
+            return Err(AppError::of(ErrorDetail::VersionBuildMetadata));
         }
         static RE: LazyLock<Regex> = LazyLock::new(|| {
             compile_bounded_regex(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
                 .expect("hardcoded semver-ish version regex is valid by construction")
         });
         if !RE.is_match(v) {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("invalid version '{v}'"),
-            ));
+            return Err(AppError::of(ErrorDetail::Invalid {
+                subject: Subject::Version,
+                value: v.to_string(),
+            }));
         }
         Ok(Self(v.to_string()))
     }
@@ -113,7 +114,7 @@ impl FromStr for VersionArg {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for unknown channels or malformed versions.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for unknown channels or malformed versions.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }

@@ -11,9 +11,11 @@
 //! # Concurrency model (Rules Rust — parallelism)
 //!
 //! Workload is **mixed I/O + CPU** (see binary `main`, [`concurrency`], [`http::HttpClient`]):
-//! multi-thread Tokio for HTTPS, `spawn_blocking` under
-//! [`concurrency::ConcurrencyBudget`] for HTML parse, and `rayon` for large
-//! `all.html` hit scans. Bound via `--max-concurrency` / auto CPU+RAM formula.
+//! multi-thread Tokio for HTTPS and `spawn_blocking` under
+//! [`concurrency::ConcurrencyBudget`] for HTML parse. The `all.html` hit scan is
+//! sequential by measurement: a `rayon` path lost at every size from 16 to 32768
+//! candidates and was removed, so the crate has no data-parallel dependency.
+//! Bound via `--max-concurrency` / auto CPU+RAM formula.
 //! Fixed auxiliary tasks (double-interrupt, [`shutdown::ProgressGuard`]) still
 //! abort-on-drop. Shared cancel uses `Arc<AtomicU8>`, not `Mutex` across `.await`.
 //!
@@ -28,8 +30,10 @@
 //! # Features
 //!
 //! This package has no Cargo feature flags. All product capabilities ship in the
-//! default build. Optional network live tests are gated by environment variables
-//! (`DOCSRS_CLI_NETWORK_TESTS`, `DOCSRS_CLI_STDLIB_NETWORK_TESTS`), not features.
+//! default build. Optional network live tests are gated by `#[ignore]` and run
+//! with `cargo test -- --ignored` — no environment variable and no feature. They
+//! used to carry a second gate reading two `DOCSRS_CLI_*` variables, which made
+//! `--ignored` return early from all of them and still report them as passed.
 //!
 //! # Safety
 //!
@@ -69,6 +73,11 @@
 // Loopback mocks use CLI/XDG `allow_loopback` — never `env::set_var`.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// Gate for the `# Errors` / `# Panics` sections. Without these two lints the
+// sections regress silently: `missing_docs` only checks that an item is
+// documented, never that a fallible item documents *how* it fails.
+#![warn(clippy::missing_errors_doc)]
+#![warn(clippy::missing_panics_doc)]
 #![warn(rustdoc::missing_crate_level_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 #![warn(rustdoc::private_intra_doc_links)]
@@ -78,21 +87,23 @@
 #![warn(rustdoc::redundant_explicit_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod agent_ops;
 pub mod cache;
 pub mod cli;
 pub mod concurrency;
 pub mod config;
 pub mod crates_io;
 pub mod diagnostics;
+mod dispatch;
 pub mod docs_rs;
 mod doctor;
-mod meta_cmds;
-mod ops;
 pub mod domain;
 pub mod error;
 pub mod http;
 pub mod i18n;
 pub mod item_kind;
+mod meta_cmds;
+mod ops;
 mod output;
 pub mod platform;
 pub mod render;
@@ -102,23 +113,19 @@ mod suggest;
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::Parser;
-use tokio::time::Instant;
 
-use crate::cli::{Cli, Commands};
-use crate::config::{APP_NAME, APP_VERSION, Config, MSRV, validate_user_agent};
+use crate::agent_ops::AgentOps;
+use crate::cli::Cli;
+use crate::cli::overrides::apply_cli_overrides;
+use crate::config::Config;
 use crate::diagnostics::init_tracing;
-use crate::error::{
-    AppError, AppResult, EXIT_BROKEN_PIPE, EXIT_USAGE, ErrorKind,
-};
+use crate::dispatch::execute;
+use crate::error::{AppError, EXIT_BROKEN_PIPE, EXIT_USAGE, ErrorDetail, ErrorKind};
 use crate::i18n::Locale;
-use crate::render::{error_envelope, success_envelope};
-use crate::shutdown::{
-    CancelFlag, duration_ms, flush_stdio, race_op_with_cancel_and_deadline,
-    spawn_double_interrupt_force_exit,
-};
+use crate::render::error_envelope;
+use crate::shutdown::flush_stdio;
 
 /// True when argv requests JSON or stdout is non-TTY (agent mode) — used before full parse.
 fn argv_wants_json_mode(args: &[std::ffi::OsString], stdout_is_terminal: bool) -> bool {
@@ -215,7 +222,7 @@ where
             // Contract: usage failures are exit EXIT_USAGE with JSON envelope in agent/JSON mode.
             let msg = e.to_string();
             if agent_json {
-                let err = AppError::new(ErrorKind::Usage, msg);
+                let err = AppError::of(ErrorDetail::ClapUsage { message: msg });
                 let _ = output::write_json(&mut stdout, &error_envelope(&err, "usage", 0));
                 flush_stdio();
                 return ExitCode::from(EXIT_USAGE);
@@ -240,7 +247,14 @@ where
                 kind = ?err.kind(),
                 "error escaped structured emit path"
             );
-            let _ = writeln!(stderr, "error: {}", err.message());
+            // Localized like every other error path. The `cli` was moved into
+            // `run_cli`, so the locale is re-read from argv — the same source the
+            // bootstrap failures in `main` use, and the only one still available
+            // here. A hardcoded `error:` prefix used to ship English whatever
+            // `--lang` said, precisely because this branch is rare enough to be
+            // forgotten.
+            let locale = Locale::from_argv_for_bootstrap(&args);
+            let _ = writeln!(stderr, "{}", locale.format_error(&err));
             err.exit_code()
         }
     };
@@ -257,11 +271,21 @@ async fn run_cli<Out: Write, ErrW: Write>(
     stdout_is_terminal: bool,
 ) -> Result<ExitCode, AppError> {
     let wire = cli.wire_command();
+
+    // Provisional locale for errors raised before the strict `--lang` resolution
+    // below. Soft mapping never fails, so an unsupported explicit tag still
+    // reaches its own fail-closed check and is reported in English there.
+    let early_locale = cli
+        .lang
+        .as_deref()
+        .map(Locale::soft_from_tag)
+        .unwrap_or_else(Locale::from_system);
+
     if let Err(e) = cli.validate_format_conflict() {
         return Ok(meta_cmds::emit_error(
             &cli,
             &e,
-            Locale::En,
+            early_locale,
             stdout,
             stderr,
             stdout_is_terminal,
@@ -269,8 +293,6 @@ async fn run_cli<Out: Write, ErrW: Write>(
             0,
         ));
     }
-
-    init_tracing(&cli);
 
     // Config load must go through `emit_error` so exit 78 / JSON envelope are correct.
     // A bare `?` would bubble to `run_with_io` and historically forced exit 70.
@@ -284,7 +306,7 @@ async fn run_cli<Out: Write, ErrW: Write>(
             return Ok(meta_cmds::emit_error(
                 &cli,
                 &e,
-                Locale::En,
+                early_locale,
                 stdout,
                 stderr,
                 stdout_is_terminal,
@@ -293,11 +315,24 @@ async fn run_cli<Out: Write, ErrW: Write>(
             ));
         }
     };
+
+    // Tracing installs *after* the config load so the XDG `log_directive` can
+    // steer it. Nothing is lost: the load emits no diagnostics of its own, and
+    // its failure already travels through `emit_error` above.
+    init_tracing(&cli, cfg.log_directive.as_deref());
+
+    // `cfg` is loaded now, so a `lang` written in config.toml can also steer this
+    // error. CLI still wins; soft mapping keeps the strict check below authoritative.
+    let cfg_locale = cli
+        .lang
+        .as_deref()
+        .or(cfg.lang.as_deref())
+        .map_or(early_locale, Locale::soft_from_tag);
     if let Err(e) = apply_cli_overrides(&cli, &mut cfg) {
         return Ok(meta_cmds::emit_error(
             &cli,
             &e,
-            Locale::En,
+            cfg_locale,
             stdout,
             stderr,
             stdout_is_terminal,
@@ -322,269 +357,45 @@ async fn run_cli<Out: Write, ErrW: Write>(
             ));
         }
     };
-    let start = Instant::now();
-    let wants_json = cli.wants_json(stdout_is_terminal);
-    let dry_run = cli.dry_run;
-    let wall = Duration::from_secs(cfg.timeout_secs.max(1));
-    let cancel = CancelFlag::new();
-    // Rules Rust: first Ctrl-C is cooperative; second within 5s force-exits 130.
-    let force_on_second = spawn_double_interrupt_force_exit();
+    // Reduction knobs are validated before any network work so a malformed
+    // `--filter` fails fast (exit 65) instead of after a paid round-trip.
+    let ops = match AgentOps::from_cli(&cli) {
+        Ok(o) => o,
+        Err(e) => {
+            return Ok(meta_cmds::emit_error(
+                &cli,
+                &e,
+                locale,
+                stdout,
+                stderr,
+                stdout_is_terminal,
+                wire,
+                0,
+            ));
+        }
+    };
 
-    let cli_ref = &cli;
-    let cfg_ref = &cfg;
-    let result = race_op_with_cancel_and_deadline(wall, cancel.clone(), async {
-        dispatch(
-            cli_ref, cfg_ref, locale, dry_run, wants_json, start, cancel, stdout, stderr,
-        )
-        .await
-    })
+    if !(ops.is_active() && cli.wants_json(stdout_is_terminal)) {
+        return Ok(execute(&cli, &cfg, locale, stdout, stderr, stdout_is_terminal, wire).await);
+    }
+
+    // Agent-native reduction: capture the envelope, cut it, then emit. The buffer is
+    // bounded by the same `max_output_bytes` budget the direct path already enforces.
+    let mut captured: Vec<u8> = Vec::new();
+    let code = execute(
+        &cli,
+        &cfg,
+        locale,
+        &mut captured,
+        stderr,
+        stdout_is_terminal,
+        wire,
+    )
     .await;
-
-    force_on_second.abort();
-
-    match result {
-        Ok(code) => Ok(code),
-        Err(e) if e.kind() == ErrorKind::BrokenPipe => Ok(ExitCode::from(EXIT_BROKEN_PIPE)),
-        Err(e) => Ok(meta_cmds::emit_error(
-            &cli,
-            &e,
-            locale,
-            stdout,
-            stderr,
-            stdout_is_terminal,
-            wire,
-            duration_ms(start),
-        )),
+    let reduced = ops.apply_to_bytes(&captured);
+    if !reduced.is_empty() && stdout.write_all(&reduced).is_err() {
+        return Ok(ExitCode::from(EXIT_BROKEN_PIPE));
     }
+    let _ = stdout.flush();
+    Ok(code)
 }
-
-fn apply_cli_overrides(cli: &Cli, cfg: &mut Config) -> AppResult<()> {
-    if let Some(t) = cli.timeout {
-        if t == 0 {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "timeout must be >= 1 second (got 0)",
-            ));
-        }
-        cfg.timeout_secs = t;
-    }
-    if let Some(t) = cli.connect_timeout {
-        if t == 0 {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                "connect_timeout must be >= 1 second (got 0)",
-            ));
-        }
-        cfg.connect_timeout_secs = t;
-    }
-    if let Some(ref ua) = cli.user_agent {
-        validate_user_agent(ua)?;
-        cfg.user_agent.clone_from(ua);
-    }
-    if let Some(b) = cli.max_body_bytes {
-        // Fail-closed: never silently clamp explicit CLI budgets (GAP-X-005).
-        if b > crate::config::HARD_MAX_BODY_BYTES {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "max_body_bytes exceeds hard maximum ({})",
-                    crate::config::HARD_MAX_BODY_BYTES
-                ),
-            ));
-        }
-        cfg.max_body_bytes = b;
-    }
-    if let Some(b) = cli.max_output_bytes {
-        if b > crate::config::HARD_MAX_OUTPUT_BYTES {
-            return Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "max_output_bytes exceeds hard maximum ({})",
-                    crate::config::HARD_MAX_OUTPUT_BYTES
-                ),
-            ));
-        }
-        cfg.max_output_bytes = b;
-    }
-    if let Some(d) = cli.rate_limit_delay_ms {
-        cfg.rate_limit_delay_ms = d;
-    }
-    if let Some(n) = cli.max_concurrency {
-        cfg.max_concurrency = n;
-    }
-    if let Some(r) = cli.max_retries {
-        cfg.max_retries = r;
-    }
-    if let Some(ms) = cli.retry_base_ms {
-        cfg.retry_base_ms = ms;
-    }
-    if let Some(ms) = cli.retry_max_delay_ms {
-        cfg.retry_max_delay_ms = ms;
-    }
-    if let Some(ms) = cli.retry_max_elapsed_ms {
-        cfg.retry_max_elapsed_ms = ms;
-    }
-    if cli.disable_retry {
-        cfg.disable_retry = true;
-    }
-    if let Some(ref l) = cli.lang {
-        match &mut cfg.lang {
-            Some(dst) => dst.clone_from(l),
-            None => cfg.lang = Some(l.clone()),
-        }
-    }
-    if cli.no_cache {
-        cfg.no_cache = true;
-    }
-    if cli.allow_loopback {
-        cfg.allow_loopback = true;
-    }
-    if let Some(ttl) = cli.cache_ttl_secs {
-        cfg.cache_ttl_secs = ttl;
-    }
-    if let Some(max) = cli.max_cache_bytes {
-        cfg.max_cache_bytes = max;
-    }
-    if let Some(ref dir) = cli.cache_dir {
-        cfg.cache_dir = Some(dir.clone());
-    }
-    // After all CLI mutations: hard ceiling (cannot elevate above HARD_MAX_*).
-    cfg.clamp_resource_limits();
-    Ok(())
-}
-
-
-#[allow(clippy::too_many_arguments)]
-async fn dispatch<Out: Write, ErrW: Write>(
-    cli: &Cli,
-    cfg: &Config,
-    locale: Locale,
-    dry_run: bool,
-    wants_json: bool,
-    start: Instant,
-    cancel: CancelFlag,
-    stdout: &mut Out,
-    _stderr: &mut ErrW,
-) -> AppResult<ExitCode> {
-    match &cli.command {
-        Commands::Version => {
-            if wants_json {
-                let data = meta_cmds::VersionData {
-                    name: APP_NAME,
-                    version: APP_VERSION,
-                    msrv: MSRV,
-                    os: std::env::consts::OS,
-                    arch: std::env::consts::ARCH,
-                };
-                output::write_json(
-                    stdout,
-                    &success_envelope("version", &data, duration_ms(start), None),
-                )?;
-            } else {
-                writeln!(stdout, "{APP_NAME} {APP_VERSION}").map_err(output::map_stdout_err)?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Commands::Doctor { online } => doctor::doctor(cfg, *online, wants_json, start, locale, stdout),
-        Commands::Commands => meta_cmds::commands_cmd(wants_json, start, stdout),
-        Commands::Schema { cmd } => meta_cmds::schema_cmd(cmd, wants_json, cli.format, start, stdout),
-        Commands::Completions { shell } => {
-            // Completions emit shell script by default (even on non-TTY). JSON only if --json/--format json.
-            let explicit_json =
-                cli.json || matches!(cli.format, Some(crate::cli::OutputFormat::Json));
-            meta_cmds::completions_cmd(*shell, explicit_json, start, stdout)
-        }
-        Commands::Cache { action } => meta_cmds::cache_cmd(cfg, action, wants_json, start, stdout),
-        Commands::Config { action } => meta_cmds::config_cmd(cli, cfg, action, wants_json, start, stdout),
-        Commands::SearchCrates {
-            query,
-            per_page,
-            sort,
-            page,
-            page_token,
-        } => {
-            let ctx = ops::OpCtx {
-                cli,
-                cfg,
-                locale,
-                dry_run,
-                wants_json,
-                start,
-                cancel,
-            };
-            ops::search_crates(&ctx, stdout, query, *per_page, *sort, *page, page_token).await
-        }
-        Commands::Readme {
-            crate_name,
-            crate_version,
-        } => {
-            let ctx = ops::OpCtx {
-                cli,
-                cfg,
-                locale,
-                dry_run,
-                wants_json,
-                start,
-                cancel,
-            };
-            ops::readme(&ctx, stdout, crate_name, crate_version).await
-        }
-        Commands::GetItem {
-            crate_name,
-            item_type,
-            item_path,
-            crate_version,
-            suggest,
-        } => {
-            let ctx = ops::OpCtx {
-                cli,
-                cfg,
-                locale,
-                dry_run,
-                wants_json,
-                start,
-                cancel,
-            };
-            ops::get_item(
-                &ctx,
-                stdout,
-                crate_name,
-                item_type,
-                item_path,
-                crate_version,
-                *suggest,
-            )
-            .await
-        }
-        Commands::SearchInCrate {
-            crate_name,
-            query,
-            crate_version,
-            item_type,
-            limit,
-            r#match,
-        } => {
-            let ctx = ops::OpCtx {
-                cli,
-                cfg,
-                locale,
-                dry_run,
-                wants_json,
-                start,
-                cancel,
-            };
-            ops::search_in_crate(
-                &ctx,
-                stdout,
-                crate_name,
-                query,
-                crate_version,
-                item_type,
-                *limit,
-                r#match,
-            )
-            .await
-        }
-    }
-}
-

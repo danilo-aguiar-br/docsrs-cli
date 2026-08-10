@@ -37,6 +37,14 @@
 parse (bytes/argv) → serde tipado → validação de domínio / map → uso
 ```
 
+| Fronteira | Parse | Serde | Domínio |
+|-----------|-------|-------|---------|
+| argv | clap | — | newtypes |
+| config.toml | UTF-8 + teto de tamanho | `TomlConfig` + deny_unknown | clamp + `validate_security` |
+| JSON do crates.io | body HTTP + content-type | `ApiResponse` | map + tetos |
+| meta do cache | teto de tamanho | `CacheMeta` + deny_unknown | digests hex + checksums |
+| stdout | — | somente Serialize | — |
+
 ## Relacionados
 - ADR 0002 (modelo de erro)
 - ADR 0004 (modelo de ameaças)

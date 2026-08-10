@@ -2,6 +2,40 @@
 
 # Migração
 
+## 1.3.0 quebras (de 1.2.x)
+- `cache clear` sem alvo recusa: exit 64, `kind=usage`, e nada é apagado
+- Passe `--cache-dir <DIR>` para nomear a raiz, ou `--yes` para aceitar a do XDG
+- Script de 1.2.x que roda `docsrs-cli cache clear` puro para de funcionar e não limpa nada
+- `config init --force` sem alvo recusa do mesmo jeito, com as mesmas duas dispensas
+- A recusa vale mesmo onde não existe arquivo ainda, para que a resposta nunca dependa do disco
+- Renome de campo: o envelope de `config init` carrega `target_source`, e `source` deixou de existir
+- Novo valor `io` em `error.kind`, no exit 74, para I/O de ambiente como disco cheio
+- Chamador que casa exaustivamente em `kind` precisa acrescentar `io` ou o match escapa
+- Essa falha chegava antes como `internal` no exit 70, então o exit code também mudou
+- `retryable` passa a ser `true` para causa de I/O transitória, onde era sempre `false`
+- `timeout_secs = 0` e `connect_timeout_secs = 0` no `config.toml` eram aceitos em 1.2.x e agora recusam
+- A recusa acontece na carga com exit 78 `kind=config`, então um arquivo herdado quebra todo comando, não um
+- Na flag o mesmo zero continua saindo 65 `kind=invalid_input`; o código nomeia qual camada carregou o valor
+- Instale esta linha com `cargo install --path . --locked --force`, porque a 1.3.0 ainda não foi publicada
+- `cargo install docsrs-cli` continua resolvendo para o último release publicado e não entrega a 1.3.0
+
+## 1.3.0 aditiva (de 1.2.x)
+- Nenhum campo de 1.2.x mudou de tipo ou de sentido; os renomes e recusas acima são a quebra inteira
+- O bundle de schemas passou de dezenove para **vinte** nomes wire; agente que asserta a contagem antiga precisa atualizá-la
+- Novo schema `agent-surface` documenta o relatório de redução, antes descoberto por tentativa
+- Novas flags globais `--sort-by` e `--max-items`; a ordem de redução passa a ser filter, sort-by, dedupe-by, max-items, select, count-only, truncate-content, max-output-bytes
+- `agent_surface` ganhou `limited`, que separa resultado pequeno de resultado cortado
+- `get-item` aceita `variant`, `structfield` e o alias `field`; um `variant Some` sem qualificação sai 65 nomeando os kinds pais
+- `field` volta ecoado como `structfield`, que é a grafia usada pelo rustdoc na âncora
+- `error.suggestions` carrega o ranking de `--suggest` como dado; pare de parsear a prosa de `error.message`
+- `anchor_family` reporta a família real do rustdoc, porque `extraction=method` também cobre variantes e campos de struct
+- Nova chave `log_directive` no `config.toml`; valor não parseável agora falha na carga com exit 78
+- `RUST_LOG` deixou de ser lido; mova a diretiva para `log_directive` ou use `-q` / `-v`
+- As âncoras de confiança TLS voltaram ao `webpki-roots` embutido: container sem repositório de CA volta a funcionar, e proxy com raiz apenas no sistema passa a falhar
+- Mantenedores: o `scripts/check-policy.sh` não existe mais; rode `cargo test --test policy_gates`
+- Confirme `docsrs-cli version --json` reportando `1.3.0`
+- Referência completa de configuração: [Configuração](CONFIGURATION.pt-BR.md)
+
 ## 1.2.0 quebras (de 1.1.x) — Camada Y
 - Method com `#method.X` ausente é **`not_found` (exit 66)** — não é mais sucesso com markdown da página pai e `extraction=item_page`
 - Sucesso de method define `data.extraction` apenas como **`method`**
@@ -30,7 +64,7 @@
 - Rename de módulo: `diagnostics` (era `telemetry`); ainda sem telemetria de produto.
 
 ## O Que Muda
-- A linha pública de produto é `1.2.x` (este release é `1.2.0`)
+- Naquele release a linha pública de produto era `1.2.x` (o release em si era `1.2.0`)
 - Dual license permanece MIT OR Apache-2.0
 - O framework de documentação segue bilíngue com skills em `skills/`
 - A superfície de comandos para agentes permanece JSON one-shot no stdout
@@ -48,7 +82,7 @@
   - Envelopes de falha expõem `command` e `duration_ms` no topo (paridade com sucesso)
   - `--suggest` em 404 de method ranqueia leaves de método na página do tipo pai
 - Releia `docsrs-cli schema --cmd get-item|error|dry-run --json` para `extraction`, envelope de erro e campos de validação do dry-run
-- Opcional: `schema --cmd all --json` para o bundle completo de 19 nomes wire
+- Opcional: `schema --cmd all --json` para o bundle completo de 20 nomes wire
 
 ## Notas históricas (contratos 1.1.x ainda relevantes em 1.1.x/1.2.x)
 - Esses contratos entraram na linha 1.1 e permanecem verdadeiros nas árvores atuais `1.2.0` (não são um caminho *para* 0.1.2)
@@ -64,8 +98,8 @@
 - Smoke humano opcional: `scripts/smoke-live.sh` (não é CI)
 
 ## Migrando de 0.1.x → 1.1.x (histórico)
-- Caminho histórico pelos contratos 1.1; o produto público atual é `1.2.0` — após upgrade completo confirme que `data.version` é `1.2.0` (não 0.1.2)
-- Instale ou atualize com `cargo install docsrs-cli --locked --force`
+- Caminho histórico pelos contratos 1.1; a árvore atual é `1.3.0` — após upgrade completo confirme que `data.version` é `1.3.0` (não 0.1.2)
+- Instale ou atualize com `cargo install --path . --locked --force`, já que a 1.3.0 não está publicada
 - Releia `docsrs-cli commands --json` se seu agente cacheou uma árvore de argv antiga
 - Releia `docsrs-cli schema --cmd <name> --json` antes de parsear campos required novos
 - Aponte skills e links de docs para o layout e os contratos atuais
@@ -162,7 +196,7 @@
 - **1.2.0** remove sucesso `item_page` em method (só `extraction=method` ou `not_found`); `budget` (exit 74, não retryable) permanece da linha 1.1; hard max acima do teto é exit 65
 
 ## Migração Passo a Passo
-- Atualize o binário e confirme a versão `1.2.0`
+- Atualize o binário e confirme a versão `1.3.0`, instalando com `cargo install --path . --locked --force`
 - Mova quaisquer settings antigos de env `DOCSRS_CLI_*` de produto para flags ou `config.toml`
 - Mantenha isolamento de path com `--config-dir` / `--cache-dir` conforme necessário
 - Substitua suposições de substring em `search-in-crate` por `--match substring` quando for o caso
@@ -201,7 +235,7 @@
 
 ## Rollback
 - Instale um binário anterior só se você ainda tiver esse artefato
-- Limpe experimentos locais incompatíveis com `docsrs-cli cache clear --json`
+- Limpe experimentos locais incompatíveis com `docsrs-cli cache clear --yes --json`
 - Mantenha sandboxes `--config-dir`/`--cache-dir` para o rollback não tocar dados XDG de produção
 - Restaure scripts que dependiam do match substring 0.1 ou de knobs de produto por env
 

@@ -2,9 +2,18 @@
 
 use sha2::{Digest, Sha256};
 
-/// True when `s` is exactly 64 lowercase hex digits (SHA-256 digest or cache key).
+/// Bytes in a SHA-256 digest.
+const SHA256_DIGEST_BYTES: usize = 32;
+
+/// Characters in the lowercase hex rendering of a SHA-256 digest.
+///
+/// Derived from the digest width rather than written as `64`, so the constant
+/// states *why* the length is what it is: two hex characters per byte.
+pub(super) const SHA256_HEX_LEN: usize = SHA256_DIGEST_BYTES * 2;
+
+/// True when `s` is exactly [`SHA256_HEX_LEN`] lowercase hex digits.
 pub(super) fn is_sha256_hex(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    s.len() == SHA256_HEX_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Alias kept for call-site clarity (cache key material hash).

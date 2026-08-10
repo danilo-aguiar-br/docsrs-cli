@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli dry-run success envelope fragment",
   "type": "object",
-  "description": "When global --dry-run is set on a network command, success envelopes include dry_run=true and data with planned_url plus planned_params. planned_params always use crate_name (never crate). For get-item method dry-run, planned_params may also include validation=url_shape_only, planned_parent_kind, and parent_kind_probe (method-specific; not required).",
+  "description": "When global --dry-run is set on a network command, success envelopes include dry_run=true and data with planned_url plus planned_params. Where planned_params names a crate at all it uses crate_name and never crate, which covers readme, get-item and search-in-crate; search-crates plans a query instead and its planned_params carry q, per_page, sort, page and page_token, with no crate_name. For get-item associated-item dry-run, planned_params may also include validation=url_shape_only, planned_parent_kind, parent_kind_probe, and planned_method_anchors (associated-item specific; not required).",
   "required": [
     "schema_version",
     "ok",
@@ -32,6 +32,11 @@
       "type": "integer",
       "minimum": 0
     },
+    "agent_surface": {
+      "type": "object",
+      "description": "Reduction report, attached beside data whenever a reduction knob is active. A dry-run combined with --select, --filter, --max-items, --sort, --dedupe-by, --count-only or --truncate-content carries it, so an envelope that forbade it would reject a valid reply. See agent-surface.schema.json for the shape.",
+      "additionalProperties": true
+    },
     "data": {
       "type": "object",
       "required": [
@@ -46,22 +51,27 @@
         },
         "planned_params": {
           "type": "object",
-          "description": "Command-specific planned fields; crate fields use crate_name. search-in-crate planned limit is clamped to 1000 even if --limit is higher. Keys vary by command, so additionalProperties remains true only on this bag. For get-item method dry-run, optional keys include validation (url_shape_only), planned_parent_kind, and parent_kind_probe (array of kind strings); these are method-specific and not required.",
+          "description": "Command-specific planned fields; crate fields use crate_name. search-in-crate planned limit is clamped to 1000 even if --limit is higher. Keys vary by command, so additionalProperties remains true only on this bag. For get-item associated-item dry-run (Parent::member paths of kind method, type or const), optional keys include validation (url_shape_only), planned_parent_kind, parent_kind_probe (array of kind strings) and planned_method_anchors; these are associated-item specific and not required.",
           "additionalProperties": true,
           "properties": {
             "validation": {
               "type": "string",
               "const": "url_shape_only",
-              "description": "Present on get-item method dry-run: plan validates URL shape only (does not verify remote existence)."
+              "description": "Present on get-item associated-item dry-run: plan validates URL shape only (does not verify remote existence)."
             },
             "planned_parent_kind": {
               "type": "string",
-              "description": "Present on get-item method dry-run: default parent kind used to build planned_url (live fetch may probe other kinds)."
+              "description": "Present on get-item associated-item dry-run: first parent kind used to build planned_url (live fetch may probe the remaining kinds). Leads with the kind that hosts the member category: trait for associated types, struct for methods and associated constants."
             },
             "parent_kind_probe": {
               "type": "array",
               "items": { "type": "string" },
-              "description": "Present on get-item method dry-run: ordered parent kind strings live fetch may probe on 404."
+              "description": "Present on get-item associated-item dry-run: ordered parent kind strings live fetch may probe on 404. Order varies by member category."
+            },
+            "planned_method_anchors": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Present on get-item associated-item dry-run: ordered rustdoc anchor ids the live fetch will try. planned_url can carry only one fragment, but rustdoc emits one id prefix per member category and they coexist on the parent page: method.NAME for inherent and defaulted methods, tymethod.NAME for required trait methods, associatedtype.NAME for associated types, associatedconstant.NAME for associated constants. Field name kept for wire compatibility with 1.2.1."
             }
           }
         }

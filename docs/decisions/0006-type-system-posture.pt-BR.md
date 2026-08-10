@@ -39,10 +39,11 @@
 - Scrape HTML pode permanecer `&str`.
 
 ### 5. Nomenclatura
-- `as_str` = empréstimo barato; `get_item` / `get_json` são verbos de comando/HTTP.
+- `as_str` = empréstimo barato; `to_*` somente quando aloca; sem getters de campo com `get_`.
+- `get_item` / `get_json` / `get_html` são **verbos de comando / HTTP**, não getters de campo.
 
 ### 6. Zero-cost
-- `#[repr(transparent)]` em newtypes de `String`.
+- Newtypes de string usam `#[repr(transparent)]` onde embrulham uma única `String`.
 - Preferir `&Newtype` a clones entre camadas.
 
 ## Consequências

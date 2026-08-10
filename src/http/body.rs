@@ -4,19 +4,16 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 
 use crate::config::HARD_MAX_BODY_BYTES;
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail};
 
 /// Read a response body with a hard byte budget and fallible allocation.
 ///
 /// Primary defense is [`HARD_MAX_BODY_BYTES`] (operators may only lower the cap).
 /// `try_reserve` / `try_reserve_exact` map allocation failure to
-/// [`ErrorKind::Network`] instead of aborting via `with_capacity` on hostile sizes.
+/// [`crate::error::ErrorKind::Network`] instead of aborting via `with_capacity` on hostile sizes.
 /// On Linux overcommit, the allocator may still report success and the OOM killer
 /// can fire later — the hard ceiling remains the main bound.
-pub(super) async fn read_body_capped(
-    resp: reqwest::Response,
-    max_bytes: u64,
-) -> AppResult<Bytes> {
+pub(super) async fn read_body_capped(resp: reqwest::Response, max_bytes: u64) -> AppResult<Bytes> {
     // Never honor a budget above the product hard ceiling (defense in depth).
     let max_bytes = max_bytes.min(HARD_MAX_BODY_BYTES);
     // When Content-Length is known and already over budget, fail without buffering.
@@ -26,10 +23,7 @@ pub(super) async fn read_body_capped(
         && n > max_bytes
     {
         // Permanent local budget — not a transport failure; do not auto-retry.
-        return Err(AppError::new(
-            ErrorKind::Budget,
-            format!("response body exceeds max_body_bytes ({max_bytes})"),
-        ));
+        return Err(AppError::of(ErrorDetail::BodyOverBudget { max_bytes }));
     }
     // Pre-size when Content-Length is present to avoid realloc churn on large docs pages.
     // Prefer try_reserve_exact when length is known; never with_capacity on external size.
@@ -40,33 +34,20 @@ pub(super) async fn read_body_capped(
     let mut buf: Vec<u8> = Vec::new();
     if capacity > 0 {
         buf.try_reserve_exact(capacity).map_err(|e| {
-            AppError::with_source(
-                ErrorKind::Network,
-                format!("failed to reserve {capacity} bytes for response body"),
-                e,
-            )
+            AppError::of_with_source(ErrorDetail::BodyReserveFailed { bytes: capacity }, e)
         })?;
     }
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| {
-            AppError::with_source(ErrorKind::Network, "failed reading response body", e)
-        })?;
+        let chunk = chunk.map_err(|e| AppError::of_with_source(ErrorDetail::BodyRead, e))?;
         if (buf.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
             // Permanent local budget — not a transport failure; do not auto-retry.
-            return Err(AppError::new(
-                ErrorKind::Budget,
-                format!("response body exceeds max_body_bytes ({max_bytes})"),
-            ));
+            return Err(AppError::of(ErrorDetail::BodyOverBudget { max_bytes }));
         }
         // Grow with try_reserve when stream chunks exceed Content-Length estimate.
         let need = chunk.len();
         if buf.capacity().saturating_sub(buf.len()) < need {
             buf.try_reserve(need).map_err(|e| {
-                AppError::with_source(
-                    ErrorKind::Network,
-                    format!("failed to reserve {need} more body bytes"),
-                    e,
-                )
+                AppError::of_with_source(ErrorDetail::BodyReserveFailed { bytes: need }, e)
             })?;
         }
         buf.extend_from_slice(&chunk);
@@ -78,7 +59,7 @@ pub(super) async fn read_body_capped(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Parse`] when the body is not valid UTF-8.
+/// Returns [`crate::error::ErrorKind::Parse`] when the body is not valid UTF-8.
 pub fn decode_utf8(body: &Bytes) -> AppResult<String> {
     let mut bytes = body.as_ref();
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -86,5 +67,5 @@ pub fn decode_utf8(body: &Bytes) -> AppResult<String> {
     }
     std::str::from_utf8(bytes)
         .map(|s| s.to_string())
-        .map_err(|e| AppError::with_source(ErrorKind::Parse, "response body is not valid UTF-8", e))
+        .map_err(|e| AppError::of_with_source(ErrorDetail::BodyNotUtf8, e))
 }

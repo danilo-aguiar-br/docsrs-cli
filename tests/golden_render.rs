@@ -82,6 +82,7 @@ fn golden_item_markdown() {
         title: "tokio::runtime::Runtime (struct)".into(),
         cache_hit: false,
         extraction: None,
+        anchor_family: None,
         resolved_item_path: None,
     };
     let md = render_item_markdown(&data);

@@ -47,10 +47,10 @@ async fn e2e_search_crates_json_and_markdown() {
     Mock::given(method("GET"))
         .and(path("/api/v1/crates"))
         .and(query_param("q", "serde"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/crates_io/search_serde.json"), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/crates_io/search_serde.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
@@ -73,10 +73,10 @@ async fn e2e_readme_json_and_markdown() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/latest/demo/index.html"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/docs_rs/readme_docblock.html"), "text/html"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/docs_rs/readme_docblock.html"),
+            "text/html",
+        ))
         .mount(&server)
         .await;
 
@@ -100,10 +100,10 @@ async fn e2e_get_item_json() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/tokio/latest/tokio/runtime/struct.Runtime.html"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/docs_rs/get_item_main.html"), "text/html"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/docs_rs/get_item_main.html"),
+            "text/html",
+        ))
         .mount(&server)
         .await;
 
@@ -133,10 +133,10 @@ async fn e2e_search_in_crate_json_and_markdown() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/demo/1.0.0/demo/all.html"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/docs_rs/all_html_sample.html"), "text/html"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/docs_rs/all_html_sample.html"),
+            "text/html",
+        ))
         .mount(&server)
         .await;
 
@@ -248,10 +248,10 @@ async fn e2e_get_item_mismatched_prefix_still_works() {
         .and(path(
             "/async-trait/latest/async_trait/trait.AsyncTrait.html",
         ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/docs_rs/get_item_main.html"), "text/html"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/docs_rs/get_item_main.html"),
+            "text/html",
+        ))
         .mount(&server)
         .await;
 

@@ -20,14 +20,20 @@
 - **Usage exception (ERR-O-008):** `ErrorKind::Usage` JSON envelopes **may** embed multi-line clap help as the agent-facing `message` payload. That text is not subject to the short-domain Display style; domain failures still use short lowercase messages
 - Clone: `AppError: Clone` shares the source via `Arc` so retries and logging can retain the original error cheaply
 - Classification: `ErrorKind::is_retryable` / `is_permanent` and matching methods on `AppError` for agent contracts (aligned with ADR 0001 retry)
+- The two do **not** always agree, and `ErrorKind::Io` is why: the kind alone cannot separate a full disk from a permission denial
+- `ErrorKind::Io.retryable()` answers `false` conservatively, while `AppError::retryable` reads the cause and may answer `true`
+- The wire field always comes from `AppError`, so the conservative kind-level answer never reaches an envelope
+- Exit 74 carries three kinds, not two: `Network` (retryable), `Budget` (permanent for the same config), and `Io` (retryable only when the cause is transient)
+- `Io` is therefore the one kind whose retryability is not a function of the kind, so branching on `kind` alone is wrong for it — read `error.retryable`
 - Local body/output caps use `ErrorKind::Budget` (exit 74, permanent for the same config); transport failures keep `ErrorKind::Network` (exit 74, retryable)
 - Emit path: every domain failure in the CLI goes through `emit_error` (JSON envelope or localized stderr)
-- Wire JSON error envelope (1.2.0+): top-level `schema_version`, `ok:false`, **`command`**, **`duration_ms`**, and nested `error` (`code`, `kind`, `message`, `retryable`, optional `retry_after_secs`) — parity with success envelopes for agent correlation
+- Wire JSON error envelope (1.2.0+): top-level `schema_version`, `ok:false`, **`command`**, **`duration_ms`**, and nested `error` (`code`, `kind`, `message`, `retryable`, optional `retry_after_secs`, optional `suggestions`) — parity with success envelopes for agent correlation
+- `suggestions` (1.3.0) publishes the `--suggest` ranking as structured data, so an agent recovering from a 404 never parses `message` prose
 - Config load failures must not use bare `?` into a hardcoded exit-70 path
 - Panic policy: only static invariants (hardcoded regex / CSS selectors) use `.expect("… valid by construction")`
 - External I/O, parse, and config always return `AppResult`
 - Security: messages and JSON envelopes never include credentials, raw response bodies, or cache paths with secrets
-- Operator-facing messages must **not** promote test-harness environment variables as product knobs (path product env is forbidden (CLI flags + XDG only since 1.1.3))
+- Operator-facing messages must **not** promote test-harness environment variables as product knobs (path product env is forbidden: CLI flags + XDG only since 1.1.3)
 - `from_http_status` accepts a short non-sensitive context label only
 
 ## Consequences

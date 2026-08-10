@@ -20,7 +20,8 @@
 - Product settings are not read from `DOCSRS_CLI_*` environment variables
 - Retry set: `408`, `429`, `500`, `502`, `503`, `504`, and reqwest timeout / connect / request transport errors
 - Never retry permanent `4xx` (incl. 401/403/422), parse errors, body cap (`ErrorKind::Budget`, exit 74, `retryable=false`), or cancel
-- Exit `74` is shared with retryable `network`; agents must branch on `error.kind` / `error.retryable`, never exit code alone
+- Exit `74` is shared by three kinds: retryable `network`, permanent `budget`, and `io`, whose retryability depends on the cause
+- Agents must branch on `error.retryable`, never on the exit code alone, and never on `kind` alone either — `io` is the kind that breaks the kind-to-retryability mapping
 - Backoff: full jitter `uniform(0..=min(base*2^n, max_delay))` with monotonic `tokio::time::sleep` and cancel checks between slices
 - `Retry-After`: delta-seconds **or** HTTP-date via `httpdate` (past dates within 1s skew → zero wait; older past → formula)
 - Honor `Retry-After` for `429` and `503` when present (no extra jitter on absolute server hint); otherwise use the formula

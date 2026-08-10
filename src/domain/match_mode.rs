@@ -1,6 +1,6 @@
 //! Text match policy for `search-in-crate`.
 
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail};
 
 /// Text match policy for `search-in-crate` (GAP-001 / GAP-019).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -30,16 +30,15 @@ impl MatchMode {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidInput`] for unknown tokens.
+    /// Returns [`crate::error::ErrorKind::InvalidInput`] for unknown tokens.
     pub fn parse(input: &str) -> AppResult<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "exact" => Ok(Self::Exact),
             "prefix" => Ok(Self::Prefix),
             "substring" | "contains" | "substr" => Ok(Self::Substring),
-            other => Err(AppError::new(
-                ErrorKind::InvalidInput,
-                format!("unknown match mode '{other}' (expected exact|prefix|substring)"),
-            )),
+            other => Err(AppError::of(ErrorDetail::UnknownMatchMode {
+                value: other.to_string(),
+            })),
         }
     }
 

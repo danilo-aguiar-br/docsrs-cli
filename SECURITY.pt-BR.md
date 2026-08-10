@@ -2,7 +2,7 @@
 
 # Política de Segurança
 ## Versões Suportadas
-- `1.2.x` (linha atual) recebe correções de segurança
+- `1.3.x` (linha atual) recebe correções de segurança
 - `0.1.x` é histórico e não recebe novas correções de segurança
 - Experimentos pré-release fora de tags não são suportados
 
@@ -58,7 +58,7 @@
 
 ## Hall of Fame
 - Pesquisadores de segurança que reportarem issues válidas podem ser listados aqui após o fix
-- Ainda sem entradas para 1.2.x
+- Ainda sem entradas para 1.3.x
 
 
 ## Boas Práticas para Usuários

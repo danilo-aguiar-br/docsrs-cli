@@ -46,5 +46,5 @@
 - Doctor expõe `web_fetch_posture` resumindo esta decisão
 
 ## Relacionados
-- `src/http/`, `src/docs_rs/`, `src/crates_io.rs`, `src/retry.rs`, `src/doctor.rs`
+- `src/http/`, `src/docs_rs/`, `src/crates_io/`, `src/retry/`, `src/doctor.rs`
 - ADR 0001 (política de retry HTTP), ADR 0002 (modelo de erro), ADR 0007 (rustls), ADR 0009 (unsafe/FFI)

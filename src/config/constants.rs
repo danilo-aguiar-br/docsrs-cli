@@ -39,6 +39,11 @@ pub const DEFAULT_RETRY_MAX_DELAY_MS: u64 = crate::retry::DEFAULT_RETRY_MAX_DELA
 pub const DEFAULT_RETRY_MAX_ELAPSED_MS: u64 = 0;
 /// Default minimum delay between requests to the same host (milliseconds).
 pub const DEFAULT_RATE_LIMIT_DELAY_MS: u64 = 1000;
+/// Default `tracing` filter when neither `-q` / `-v` nor `log_directive` apply.
+///
+/// Agent-first: stderr stays silent below `error` so a caller parsing stdout is
+/// never asked to skip banner noise it did not request.
+pub const DEFAULT_LOG_DIRECTIVE: &str = "error";
 /// Default `per_page` for crates.io search.
 pub const DEFAULT_PER_PAGE: u32 = 10;
 /// Default hit limit for search-in-crate.
@@ -47,11 +52,6 @@ pub const DEFAULT_SEARCH_LIMIT: u32 = 100;
 pub const MAX_PER_PAGE: u32 = 100;
 /// Maximum hit limit for search-in-crate.
 pub const MAX_SEARCH_IN_CRATE_LIMIT: u32 = 1000;
-/// Minimum `all.html` candidate count before `rayon` fan-out (algorithm floor).
-///
-/// Not a product knob — below this threshold thread-pool overhead exceeds the
-/// sequential scan cost on one-shot CLI workloads (SCRAPE-S-005).
-pub const RAYON_HIT_THRESHOLD: usize = 64;
 /// Maximum query string length.
 pub const MAX_QUERY_CHARS: usize = 256;
 /// Maximum crate name length.
@@ -97,6 +97,19 @@ pub const HOST_LOOPBACK_IPV4: &str = "127.0.0.1";
 pub const HOST_LOCALHOST: &str = "localhost";
 /// HTTPS scheme token (product endpoints are TLS-only in production).
 pub const SCHEME_HTTPS: &str = "https";
+/// TLS port used by the `doctor --online` DNS/TCP reachability probe.
+pub const HTTPS_PORT: u16 = 443;
+/// File name of the optional XDG configuration file.
+///
+/// Four modules join this onto the config directory — loader, path reporter,
+/// `config init`, and `config path`. Renaming it in three of them would leave
+/// the fourth silently reading or reporting a file nobody writes.
+pub const CONFIG_FILE_NAME: &str = "config.toml";
+/// Historical placeholder contact host that `doctor` must reject.
+///
+/// Named here so the check and the message it prints read the same string:
+/// two literals would let one be corrected while the other kept accusing.
+pub const PLACEHOLDER_CONTACT_HOST: &str = "github.com/docsrs-cli/docsrs-cli";
 /// Default contact / repository URL (from `Cargo.toml` `[package].repository`).
 ///
 /// Single source of truth — never duplicate the GitHub URL as a string literal.

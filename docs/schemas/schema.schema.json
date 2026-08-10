@@ -1,28 +1,88 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "docsrs-cli schema success data",
-  "type": "object",
-  "description": "Payload under envelope.data for command schema. Outer envelope always has schema_version=1, ok, command, duration_ms. The embedded document is a JSON Schema for another command's success data.",
-  "required": [
-    "command",
-    "schema",
-    "schema_version"
-  ],
-  "additionalProperties": false,
-  "properties": {
-    "command": {
-      "type": "string",
-      "description": "Value of --cmd that was requested"
-    },
-    "schema": {
+  "description": "Payload under envelope.data for command schema. Outer envelope always has schema_version=1, ok, command, duration_ms. Two shapes come out of this one command: --cmd <name> embeds a single document, --cmd all embeds the whole bundle. Both are described here because a validator handed only the single shape rejects the bundle this repository's own index recommends.",
+  "oneOf": [
+    {
+      "title": "schema --cmd <name>",
       "type": "object",
-      "description": "Embedded JSON Schema document for the requested command success data. additionalProperties is true because the document is itself a free-form JSON Schema.",
-      "additionalProperties": true
+      "description": "One embedded JSON Schema document for the requested command success data.",
+      "required": [
+        "command",
+        "schema",
+        "schema_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Value of --cmd that was requested"
+        },
+        "schema": {
+          "type": "object",
+          "description": "Embedded JSON Schema document for the requested command success data. additionalProperties is true because the document is itself a free-form JSON Schema.",
+          "additionalProperties": true
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Envelope/schema contract version (always 1; product line 1.3.x)"
+        }
+      }
     },
-    "schema_version": {
-      "type": "integer",
-      "const": 1,
-      "description": "Envelope/schema contract version (always 1; product line 1.2.x)"
+    {
+      "title": "schema --cmd all",
+      "type": "object",
+      "description": "The whole bundle in one call: every wire name paired with its embedded document.",
+      "required": [
+        "mode",
+        "commands",
+        "items",
+        "schema_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "all",
+          "description": "Present only in bundle mode and absent from the single-document shape, so it is the field that tells the two apart"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every wire name the bundle carries, in dispatch order: the nine top-level commands, the six nested cache/config names, and the five names that describe a shape rather than an invocation (error, dry-run, agent-surface, cache, config)"
+        },
+        "items": {
+          "type": "array",
+          "description": "One entry per name in commands, same order and same length",
+          "items": {
+            "type": "object",
+            "required": [
+              "cmd",
+              "schema"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "description": "Wire name this entry documents"
+              },
+              "schema": {
+                "type": "object",
+                "description": "Embedded JSON Schema document. additionalProperties is true because the document is itself a free-form JSON Schema.",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Envelope/schema contract version (always 1; product line 1.3.x)"
+        }
+      }
     }
-  }
+  ]
 }

@@ -12,7 +12,9 @@ use serde::Serialize;
 use tokio::time::Instant;
 
 use crate::cache::DiskCache;
-use crate::config::{APP_NAME, Config};
+use crate::config::{
+    APP_NAME, Config, HOST_CRATES_IO, HOST_DOCS_RS, HTTPS_PORT, PLACEHOLDER_CONTACT_HOST,
+};
 use crate::error::{AppResult, EXIT_CONFIG};
 use crate::i18n::Locale;
 use crate::output::{map_stdout_err, write_json};
@@ -146,7 +148,8 @@ pub(crate) fn doctor<Out: Write>(
     checks.push(DoctorCheck {
         name: "dotenv_runtime",
         ok: true,
-        detail: "disabled (XDG + CLI flags only; no product env; no .env required after install)".into(),
+        detail: "disabled (XDG + CLI flags only; no product env; no .env required after install)"
+            .into(),
     });
     checks.push(DoctorCheck {
         name: "secrets_layers",
@@ -204,8 +207,13 @@ pub(crate) fn doctor<Out: Write>(
                 if !ready {
                     (false, ready_detail)
                 } else {
-                    let stats =
-                        DiskCache::new(p.clone(), cfg.cache_ttl(), cfg.max_cache_bytes, cfg.allow_loopback).stats();
+                    let stats = DiskCache::new(
+                        p.clone(),
+                        cfg.cache_ttl(),
+                        cfg.max_cache_bytes,
+                        cfg.allow_loopback,
+                    )
+                    .stats();
                     let budget = if cfg.max_cache_bytes == 0 {
                         "unlimited".to_string()
                     } else {
@@ -243,7 +251,7 @@ pub(crate) fn doctor<Out: Write>(
     } else {
         match &cfg.cache_dir {
             Some(p) => {
-                let rl = p.join("rate-limit");
+                let rl = p.join(crate::http::RATE_LIMIT_DIR_NAME);
                 dir_ready_check(&rl)
             }
             None => (
@@ -266,33 +274,34 @@ pub(crate) fn doctor<Out: Write>(
     });
 
     // Contact URL should not be the historical placeholder host.
-    let ua_contact_ok = !cfg.user_agent.contains("github.com/docsrs-cli/docsrs-cli");
+    let ua_contact_ok = !cfg.user_agent.contains(PLACEHOLDER_CONTACT_HOST);
     checks.push(DoctorCheck {
         name: "user_agent_contact",
         ok: ua_contact_ok,
         detail: if ua_contact_ok {
             "contact is not the placeholder docsrs-cli org".into()
         } else {
-            "placeholder contact host github.com/docsrs-cli/docsrs-cli is invalid".into()
+            format!("placeholder contact host {PLACEHOLDER_CONTACT_HOST} is invalid")
         },
     });
 
     if online {
         // Sync DNS/TCP probe (no async runtime needed inside doctor).
         for (name, host) in [
-            ("online_crates_io", "crates.io"),
-            ("online_docs_rs", "docs.rs"),
+            ("online_crates_io", HOST_CRATES_IO),
+            ("online_docs_rs", HOST_DOCS_RS),
         ] {
-            let ok_probe = ToSocketAddrs::to_socket_addrs(&format!("{host}:443"))
+            let authority = format!("{host}:{HTTPS_PORT}");
+            let ok_probe = ToSocketAddrs::to_socket_addrs(&authority)
                 .map(|mut it| it.next().is_some())
                 .unwrap_or(false);
             checks.push(DoctorCheck {
                 name,
                 ok: ok_probe,
                 detail: if ok_probe {
-                    format!("{host}:443 resolves")
+                    format!("{authority} resolves")
                 } else {
-                    format!("{host}:443 DNS/resolve failed")
+                    format!("{authority} DNS/resolve failed")
                 },
             });
         }

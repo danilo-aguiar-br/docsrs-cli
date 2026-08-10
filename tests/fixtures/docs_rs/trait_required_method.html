@@ -1,0 +1,92 @@
+<!doctype html>
+<!--
+  Rustdoc trait page shape: a REQUIRED method and a PROVIDED method side by side.
+
+  Rustdoc gives them different anchor id prefixes on purpose, so a client cannot
+  treat a trait page like a struct page:
+
+    id="tymethod.next"           required method, declared without a body
+    id="method.map"              provided method, has a default body
+    id="associatedtype.Item"     associated type
+    id="associatedconstant.LIMIT" associated constant
+
+  There is no "the anchor prefix": rustdoc emits one prefix per member category,
+  and they all coexist in the same document. Measured on the live
+  std::iter::Iterator page: 198 associatedtype ids, 75 method ids, 1 tymethod id.
+
+  Upstream keeps this contract under test as
+  tests/rustdoc-html/anchors/anchor-id-trait-tymethod-28478.rs (rust-lang/rust
+  issue 28478). Trimmed to the anchors under test; unrelated chrome is dropped.
+
+  associatedtype.Item-1 is the suffixed duplicate rustdoc emits for impl blocks.
+  It must never satisfy a lookup for Item — matching is full-id equality, not a
+  prefix test.
+-->
+<html lang="en">
+<body>
+<div id="main-content" class="rustdoc">
+<h1>Trait <span>Iterator</span></h1>
+<div class="docblock"><p>parent page noise that must never be returned as a method</p></div>
+
+<h2 id="required-methods">Required Methods<a href="#required-methods">§</a></h2>
+<div class="methods">
+<details class="toggle method-toggle" open>
+<summary>
+<section id="tymethod.next" class="method">
+<h4 class="code-header">fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;</h4>
+</section>
+</summary>
+<div class="docblock"><p>Advances the iterator and returns the next value.</p></div>
+</details>
+</div>
+
+<h2 id="provided-methods">Provided Methods<a href="#provided-methods">§</a></h2>
+<div class="methods">
+<details class="toggle method-toggle" open>
+<summary>
+<section id="method.map" class="method">
+<h4 class="code-header">fn map&lt;B, F&gt;(self, f: F) -&gt; Map&lt;Self, F&gt;</h4>
+</section>
+</summary>
+<div class="docblock"><p>Takes a closure and creates an iterator calling it on each element.</p></div>
+</details>
+<details class="toggle method-toggle" open>
+<summary>
+<section id="method.size_hint" class="method">
+<h4 class="code-header">fn size_hint(&amp;self) -&gt; (usize, Option&lt;usize&gt;)</h4>
+</section>
+</summary>
+<div class="docblock"><p>Returns the bounds on the remaining length of the iterator.</p></div>
+</details>
+</div>
+
+<h2 id="associated-types">Associated Types</h2>
+<details class="toggle" open>
+<summary>
+<section id="associatedtype.Item" class="method">
+<h4 class="code-header">type Item</h4>
+</section>
+</summary>
+<div class="docblock"><p>The type of the elements being iterated over.</p></div>
+</details>
+<details class="toggle" open>
+<summary>
+<section id="associatedtype.Item-1" class="method">
+<h4 class="code-header">type Item = B</h4>
+</section>
+</summary>
+<div class="docblock"><p>impl-block duplicate that must never satisfy a lookup for Item.</p></div>
+</details>
+
+<h2 id="associated-constants">Associated Constants</h2>
+<details class="toggle" open>
+<summary>
+<section id="associatedconstant.LIMIT" class="method">
+<h4 class="code-header">const LIMIT: usize</h4>
+</section>
+</summary>
+<div class="docblock"><p>Upper bound honored by this iterator.</p></div>
+</details>
+</div>
+</body>
+</html>

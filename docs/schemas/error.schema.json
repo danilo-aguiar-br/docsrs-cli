@@ -36,7 +36,23 @@
         },
         "kind": {
           "type": "string",
-          "description": "Stable snake_case ErrorKind discriminant on the wire (usage|invalid_input|not_found|rate_limited|unavailable|timeout|network|budget|parse|config|internal|broken_pipe|canceled). budget = local body/output budget exceeded (exit 74, retryable=false). canceled covers SIGINT/SIGTERM (exit 130/143); internal Interrupted/Terminated map to canceled on the wire."
+          "enum": [
+            "usage",
+            "invalid_input",
+            "not_found",
+            "rate_limited",
+            "unavailable",
+            "timeout",
+            "network",
+            "budget",
+            "parse",
+            "config",
+            "io",
+            "internal",
+            "broken_pipe",
+            "canceled"
+          ],
+          "description": "Stable snake_case ErrorKind discriminant on the wire. Enumerated here as well as described, because a description is prose and a validator cannot reject a kind that only prose forbids. budget = local body/output budget exceeded (exit 74, retryable=false). io = local filesystem failure caused by the environment (exit 74); retryable reflects the OS cause, so a full disk is retryable and a permission denial is not. Exit 74 is shared by network, budget and io and is ambiguous until this field is read. canceled covers SIGINT/SIGTERM (exit 130/143); internal Interrupted/Terminated map to canceled on the wire."
         },
         "message": {
           "type": "string",
@@ -44,12 +60,32 @@
         },
         "retryable": {
           "type": "boolean",
-          "description": "True only for transient failures (rate_limited, unavailable, timeout, network). budget is permanent for the same config."
+          "description": "True only for transient failures (rate_limited, unavailable, timeout, network, and io when the OS cause can clear). budget is permanent for the same config. For io the answer comes from the underlying errno, not from the kind: ENOSPC is retryable and EACCES is not, and both arrive as kind=io at exit 74."
         },
         "retry_after_secs": {
           "type": "integer",
           "minimum": 0,
           "description": "Omitted when absent; never JSON null"
+        },
+        "suggestions": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Ranked --suggest alternatives, best first. Present only on a not-found whose recovery ladder produced at least one candidate; omitted otherwise, never JSON null and never an empty array. The same list is also spelled into message for humans — read it here instead of splitting that sentence apart.",
+          "items": {
+            "type": "object",
+            "required": ["path", "kind"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Item path to retype (option::Option::unwrap), without the crate prefix"
+              },
+              "kind": {
+                "type": "string",
+                "description": "CLI kind to pass alongside path (method, variant, struct, …). This is the kind the caller would retype, not the rustdoc anchor family: labelling an associated type as method would send them back into the same not-found."
+              }
+            }
+          }
         }
       }
     }

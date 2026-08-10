@@ -34,16 +34,18 @@
 
 ## Mapa STRIDE (componentes críticos)
 
-| Componente | Controles principais |
-|------------|----------------------|
-| CLI / parse de domínio | Newtypes, caps de tamanho, rejeição de control/invisíveis |
-| Config TOML | Cap 64 KiB, `deny_unknown_fields`, allowlist de origin, UA ASCII |
-| Cliente HTTP | Allowlist (config+redirect+request+cache), GET-only, cap de body, timeouts, rustls ≥1.2 |
-| Cache em disco | Chaves hex SHA-256, caps+checksum, re-check de `final_url` |
-| Scrub HTML | Remove script/style; strip `on*` / `javascript:` |
-| Retry | Budget dual; sem retry em 4xx permanente/parse/budget |
-| Concorrência | `ConcurrencyBudget`, pool blocking limitado |
-| Spawn de processo | **N/A no produto** |
+| Componente | S | T | R | I | D | E | Controles principais |
+|------------|---|---|---|---|---|---|----------------------|
+| CLI / parse de domínio | | ✓ entrada forjada | | ✓ tipos inválidos | ✓ args enormes | | Newtypes, caps de tamanho, rejeição de control/invisíveis |
+| Config TOML | | ✓ chaves com typo | | ✓ origins maliciosas | ✓ bomba TOML | | Cap 64 KiB, `deny_unknown_fields`, allowlist de origin, UA ASCII |
+| Cliente HTTP | | ✓ SSRF / redirect | | ✓ confusão de MIME | ✓ slowloris/body | | Allowlist (config+redirect+request+cache), GET-only, cap de stream de body, timeouts, rustls ≥1.2 |
+| Cache em disco | | ✓ meta envenenada | | ✓ chave de path | ✓ enchimento de disco | | Chaves hex SHA-256, caps+checksum de body/meta, re-check de `final_url`, evicção por max_bytes |
+| Scrub HTML | | | | ✓ XSS no MD | | | Remove script/style; strip `on*` / `javascript:` |
+| Retry | | | | | ✓ tempestade de retry | | Budget dual; sem retry em 4xx permanente/parse/budget |
+| Concorrência | | | | | ✓ explosão de tasks | | `ConcurrencyBudget`, pool blocking limitado |
+| Spawn de processo | | | | | | | **N/A no produto** (sem `Command`); os testes usam helper sanitizado |
+
+Legenda: S spoofing · T tampering · R repúdio · I vazamento de informação · D negação de serviço · E elevação de privilégio
 
 ## Riscos aceitos (explícitos)
 | Risco | Justificativa |
@@ -57,6 +59,10 @@
 | `unsafe` transitivo | Produto `#![forbid(unsafe_code)]`; `cargo audit` recomendado |
 | Sem CI/SLSA nesta linha | Fora do escopo da entrega atual |
 
+## Uso de CVSS
+- Vulnerabilidades de produto descobertas são triadas com CVSS v4 nos SLAs de `SECURITY.md`
+- Priorize por exposição real: bypass de SSRF ou de allowlist e alocação sem limite ficam acima de problemas cosméticos
+
 ## Relacionado
-- `SECURITY.md`, `src/http.rs`, `src/config.rs`, `src/domain.rs`, `src/cache.rs`
+- `SECURITY.md`, `src/http/`, `src/config/`, `src/domain/`, `src/cache/`
 - ADR 0001–0003; inventário gaps camadas G e H

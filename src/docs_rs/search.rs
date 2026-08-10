@@ -1,11 +1,13 @@
-//! all.html search: async fetch + parallel/sequential hit classification.
+//! all.html search: async fetch + sequential hit classification.
 //!
-//! Parallelism: `rayon` only above [`RAYON_HIT_THRESHOLD`]; small lists stay sequential.
+//! The scan is sequential by measurement, not by omission. Per-item work is one
+//! URL resolve plus a string match — too small to amortize thread fan-out and
+//! join. A rayon path was benchmarked from 16 to 32768 candidates and lost at
+//! every size (best case 0.85x, i.e. 18% slower), so it was removed.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use rayon::prelude::*;
 use scraper::{Html, Selector};
 use url::Url;
 
@@ -15,9 +17,9 @@ static SEL_MAIN_CONTENT_A: LazyLock<Selector> = LazyLock::new(|| {
         .expect("hardcoded scraper selector '#main-content a' is valid by construction")
 });
 
-use crate::config::{MAX_SEARCH_IN_CRATE_LIMIT, RAYON_HIT_THRESHOLD};
+use crate::config::MAX_SEARCH_IN_CRATE_LIMIT;
 use crate::domain::{AllowedOrigin, CrateName, MatchMode, SearchQuery, VersionArg};
-use crate::error::{AppError, AppResult, ErrorKind};
+use crate::error::{AppError, AppResult, ErrorDetail};
 use crate::http::{HttpClient, decode_utf8, require_content_type_html};
 use crate::item_kind::ItemKind;
 use crate::shutdown::CancelFlag;
@@ -47,14 +49,7 @@ pub async fn search_in_crate(
         AllowedOrigin::docs_rs_default()
     };
     search_in_crate_on_origin(
-        http,
-        &origin,
-        crate_name,
-        version,
-        query,
-        item_type,
-        limit,
-        match_mode,
+        http, &origin, crate_name, version, query, item_type, limit, match_mode,
     )
     .await
 }
@@ -89,7 +84,7 @@ pub async fn search_in_crate_on_origin(
 ///
 /// Propagates HTTP errors from [`HttpClient::get_html`].
 /// Maps non-success statuses via [`AppError::from_http_status`].
-/// Returns [`ErrorKind::Parse`] on non-UTF-8 bodies or href join failures.
+/// Returns [`crate::error::ErrorKind::Parse`] on non-UTF-8 bodies or href join failures.
 /// Propagates parse errors from [`search_in_crate_from_html`].
 #[allow(clippy::too_many_arguments)] // domain triple + filter/limit/mode + url
 pub async fn search_in_crate_at(
@@ -185,19 +180,14 @@ fn same_origin(base: &Url, candidate: &Url) -> bool {
 /// Join relative/absolute href against crate rustdoc base (same-origin).
 ///
 /// Prefer [`resolve_hit_url`] in hit classification (soft-skip). This wrapper
-/// maps off-origin / join failure to [`ErrorKind::Parse`] for callers that want
+/// maps off-origin / join failure to [`crate::error::ErrorKind::Parse`] for callers that want
 /// a hard error.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Parse`] when the href is off-origin or not joinable.
+/// Returns [`crate::error::ErrorKind::Parse`] when the href is off-origin or not joinable.
 pub fn join_href(base: &Url, href: &str) -> AppResult<String> {
-    resolve_hit_url(base, href).ok_or_else(|| {
-        AppError::new(
-            ErrorKind::Parse,
-            "failed to join href (off-origin or invalid against source_url base)",
-        )
-    })
+    resolve_hit_url(base, href).ok_or_else(|| AppError::of(ErrorDetail::HitJoinFailed))
 }
 
 /// One classified hit candidate before dedup/limit (index preserves document order).
@@ -212,7 +202,7 @@ type ClassifiedHit = (usize, String, ItemKind, String, u8);
 /// mock origins keep correct hit URLs (SCRAPE-Q-001). Off-origin absolute hrefs
 /// are soft-skipped (SCRAPE-S-001).
 ///
-/// Large candidate lists use `rayon`; small lists stay sequential.
+/// The scan is sequential at every size (see module docs).
 /// Results are scored and sorted (exact leaf first) before applying `limit`.
 ///
 /// # Errors
@@ -250,10 +240,7 @@ pub fn parse_all_html_hits(
         })
         .collect();
 
-    if candidates.len() < RAYON_HIT_THRESHOLD {
-        return filter_hits_sequential(candidates, base, &q, item_type, limit, match_mode, cancel);
-    }
-    filter_hits_parallel(candidates, base, &q, item_type, limit, match_mode, cancel)
+    filter_hits_sequential(candidates, base, &q, item_type, limit, match_mode, cancel)
 }
 
 pub(super) fn filter_hits_sequential(
@@ -276,38 +263,47 @@ pub(super) fn filter_hits_sequential(
     finalize_hits(rows, limit)
 }
 
-pub(super) fn filter_hits_parallel(
-    candidates: Vec<(String, String)>,
-    base: &Url,
-    q: &str,
-    item_type: Option<ItemKind>,
+pub(super) fn finalize_hits(
+    mut rows: Vec<ClassifiedHit>,
     limit: usize,
-    match_mode: MatchMode,
-    cancel: &CancelFlag,
 ) -> AppResult<Vec<SearchInCrateHit>> {
-    // Clone Arc-backed flag once for the rayon pool (cheap; no product env).
-    let cancel = cancel.clone();
-    let mapped: AppResult<Vec<Option<ClassifiedHit>>> = candidates
-        .into_par_iter()
-        .enumerate()
-        .map(|(idx, (name, href))| {
-            // Cooperative cancel: first cancelled worker returns Interrupted/Terminated.
-            cancel.check()?;
-            classify_hit_row(idx, name, &href, base, q, item_type, match_mode)
-        })
-        .collect();
-    let rows: Vec<ClassifiedHit> = mapped?.into_iter().flatten().collect();
-    finalize_hits(rows, limit)
-}
-
-pub(super) fn finalize_hits(mut rows: Vec<ClassifiedHit>, limit: usize) -> AppResult<Vec<SearchInCrateHit>> {
     // Score ascending, then original document order for stability.
     rows.sort_by(|a, b| a.4.cmp(&b.4).then_with(|| a.0.cmp(&b.0)));
-    // Capacity: min(limit, rows) so `usize::MAX` total-scan never overflows (SCRAPE-S-005).
-    let mut hits = Vec::with_capacity(limit.min(rows.len()));
-    let mut seen: HashSet<(String, ItemKind)> = HashSet::new();
-    for (_idx, name, kind, abs, score) in rows {
-        if !seen.insert((name.clone(), kind)) {
+
+    // Two passes so the dedup key borrows from the rows instead of cloning every
+    // name into the set (GAP-ALLOC-001). The single-pass version had to clone,
+    // because the same `String` was needed by both the `HashSet` and the hit it
+    // moved into; splitting the decision from the construction removes that
+    // conflict without changing the result or its order.
+    //
+    // The borrow forces the scope: `seen` holds `&str` into `rows`, so it must
+    // die before `rows` is consumed below. The block is what guarantees that,
+    // and `keep` carries the decision out as plain bytes.
+    let mut kept = 0usize;
+    let keep: Vec<bool> = {
+        let mut seen: HashSet<(&str, ItemKind)> = HashSet::with_capacity(rows.len());
+        rows.iter()
+            .map(|(_idx, name, kind, _abs, _score)| {
+                // Stop admitting once the limit is met, mirroring the original
+                // `break`: rows past that point are neither emitted nor recorded.
+                if kept >= limit {
+                    return false;
+                }
+                let fresh = seen.insert((name.as_str(), *kind));
+                if fresh {
+                    kept += 1;
+                }
+                fresh
+            })
+            .collect()
+    };
+
+    // Capacity is the measured survivor count, not `limit.min(rows.len())`: the
+    // exact number is known now, so the vector never over-allocates for a query
+    // whose matches were mostly duplicates (SCRAPE-S-005 still bounds the scan).
+    let mut hits = Vec::with_capacity(kept);
+    for ((_idx, name, kind, abs, score), keep_row) in rows.into_iter().zip(keep) {
+        if !keep_row {
             continue;
         }
         hits.push(SearchInCrateHit {
@@ -316,9 +312,6 @@ pub(super) fn finalize_hits(mut rows: Vec<ClassifiedHit>, limit: usize) -> AppRe
             url: abs,
             score: Some(score),
         });
-        if hits.len() >= limit {
-            break;
-        }
     }
     Ok(hits)
 }
@@ -358,7 +351,7 @@ pub(super) fn classify_hit_row(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorKind::Parse`] when `source_url` is not a valid URL base.
+/// Returns [`crate::error::ErrorKind::Parse`] when `source_url` is not a valid URL base.
 /// Propagates parse failures from [`parse_all_html_hits`].
 #[allow(clippy::too_many_arguments)] // pure offline path mirrors the async API surface
 pub fn search_in_crate_from_html(
@@ -375,10 +368,17 @@ pub fn search_in_crate_from_html(
 ) -> AppResult<SearchInCrateData> {
     let limit = (limit as usize).min(MAX_SEARCH_IN_CRATE_LIMIT as usize);
     // Join base = final all.html URL (stdlib / mock / docs.rs). Never rebuild host.
-    let base = Url::parse(source_url).map_err(|e| {
-        AppError::with_source(ErrorKind::Parse, "invalid source_url for hit join base", e)
-    })?;
-    let all = parse_all_html_hits(html, &base, query, item_type, usize::MAX, match_mode, cancel)?;
+    let base = Url::parse(source_url)
+        .map_err(|e| AppError::of_with_source(ErrorDetail::HitBaseInvalid, e))?;
+    let all = parse_all_html_hits(
+        html,
+        &base,
+        query,
+        item_type,
+        usize::MAX,
+        match_mode,
+        cancel,
+    )?;
     let total = all.len();
     let hits: Vec<_> = all.into_iter().take(limit).collect();
     let emitted = hits.len();
@@ -406,4 +406,62 @@ pub fn search_in_crate_from_html(
         source_url: source_url.to_string(),
         cache_hit,
     })
+}
+
+#[cfg(test)]
+mod threshold_tests {
+    use super::*;
+
+    fn candidates(count: usize) -> Vec<(String, String)> {
+        (0..count)
+            .map(|i| {
+                (
+                    format!("symbol_name_{i}"),
+                    format!("struct.symbol_name_{i}.html"),
+                )
+            })
+            .collect()
+    }
+
+    fn base() -> Url {
+        Url::parse("https://docs.rs/tokio/latest/tokio/all.html").expect("static test URL is valid")
+    }
+
+    #[test]
+    fn sequential_scan_keeps_every_matching_candidate() {
+        // Size sweep bracketing the removed rayon threshold (63/64): the scan
+        // must classify every candidate whatever the list size. This replaces
+        // the old sequential-vs-parallel equality test, which could only prove
+        // the two paths agreed, never that either was right.
+        let cancel = CancelFlag::new();
+        for count in [1usize, 63, 64, 500] {
+            let hits = filter_hits_sequential(
+                candidates(count),
+                &base(),
+                "symbol",
+                None,
+                usize::MAX,
+                MatchMode::Substring,
+                &cancel,
+            )
+            .expect("sequential classification succeeds");
+            assert_eq!(hits.len(), count, "hit count mismatch at count={count}");
+        }
+    }
+
+    #[test]
+    fn sequential_scan_applies_limit() {
+        let cancel = CancelFlag::new();
+        let hits = filter_hits_sequential(
+            candidates(500),
+            &base(),
+            "symbol",
+            None,
+            10,
+            MatchMode::Substring,
+            &cancel,
+        )
+        .expect("sequential classification succeeds");
+        assert_eq!(hits.len(), 10);
+    }
 }
